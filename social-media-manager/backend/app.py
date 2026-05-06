@@ -1,5 +1,5 @@
-﻿"""
-Sample SoMe-Auto - Backend API
+"""
+MSS SoME-Auto - Backend API
 Clean Flask backend for local social media scheduling and publishing workflows.
 """
 
@@ -97,7 +97,7 @@ TIMEZONE_ALIASES = {
 }
 
 DEFAULT_SETTINGS = {
-    "app_name": "Sample SoMe-Auto",
+    "app_name": "MSS SoME-Auto",
     "default_post_time": "10:00",
     "timezone": APP_TIMEZONE_NAME,
     "auto_schedule": "true",
@@ -213,29 +213,29 @@ PAGE_REFERENCE_SHEET_MAX_TITLE_LENGTH = 120
 PAGE_REFERENCE_SHEET_MAX_LABEL_LENGTH = 80
 PAGE_REFERENCE_SHEET_MAX_CELL_HTML_LENGTH = 20000
 USER_ROLES = {"developer", "admin", "designer"}
-PRIMARY_DEVELOPER_USERNAME = (os.environ.get("PRIMARY_DEVELOPER_USERNAME", "exampleuser").strip() or "exampleuser").lower()
+PRIMARY_DEVELOPER_USERNAME = (os.environ.get("PRIMARY_DEVELOPER_USERNAME", "marcel").strip() or "marcel").lower()
 PRIMARY_DEVELOPER_DISPLAY_NAME = (
-    os.environ.get("PRIMARY_DEVELOPER_DISPLAY_NAME", "Example User").strip() or PRIMARY_DEVELOPER_USERNAME
+    os.environ.get("PRIMARY_DEVELOPER_DISPLAY_NAME", "Marcel").strip() or PRIMARY_DEVELOPER_USERNAME
 )
-PRIMARY_DEVELOPER_EMAIL = os.environ.get("PRIMARY_DEVELOPER_EMAIL", "Example@sample.co.za").strip() or None
-PRIMARY_DEVELOPER_PASSWORD = os.environ.get("PRIMARY_DEVELOPER_PASSWORD", "change-me-example-password")
+PRIMARY_DEVELOPER_EMAIL = os.environ.get("PRIMARY_DEVELOPER_EMAIL", "marcel@marketingss.co.za").strip() or None
+PRIMARY_DEVELOPER_PASSWORD = os.environ.get("PRIMARY_DEVELOPER_PASSWORD", "admin123")
 ROLE_TABS = {
     "developer": ["pages", "scheduled", "posted", "planning", "settings", "integrations"],
     "admin": ["pages", "scheduled", "posted", "planning"],
     "designer": ["scheduled", "posted", "planning"],
 }
 PLANNING_READY_COLOR = "#34A853"
-PLANNING_Reviewer_SENT_COLOR = "#137333"
+PLANNING_CLARISE_SENT_COLOR = "#137333"
 PLANNING_SCHEDULED_COLOR = "#0B57D0"
 PLANNING_POSTED_COLOR = "#666666"
 PLANNING_FAILED_COLOR = "#000000"
 FACEBOOK_NATIVE_SCHEDULE_BUFFER_MINUTES = 25
-# The scheduler runs every 30 seconds, so wake slightly earlier to preserve a true
-# 25-minute minimum lead time before handing posts off to Facebook.
+# The scheduler runs every 30 seconds, so pull approved planning rows into the
+# scheduled queue shortly before their target time.
 PLANNING_AUTO_SCHEDULE_LEAD_MINUTES = FACEBOOK_NATIVE_SCHEDULE_BUFFER_MINUTES + 1
 PLANNING_WARNING_LEAD_HOURS = 24
 PLANNING_READY_WARNING_LEAD_HOURS = 2
-PLANNING_Reviewer_REQUIRED_FIELDS = {
+PLANNING_CLARISE_REQUIRED_FIELDS = {
     "theme": "Theme",
     "post_copy": "Post Copy",
     "format": "Format",
@@ -246,11 +246,11 @@ EMAIL_TO = [
     for email in os.environ.get("EMAIL_TO", "").split(",")
     if email.strip()
 ]
-EMAIL_FROM = os.environ.get("EMAIL_FROM", "Example@sample.co.za").strip()
-SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.sample.co.za").strip()
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "marcel@marketingss.co.za").strip()
+SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.marketingss.co.za").strip()
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
-SMTP_USER = os.environ.get("SMTP_USER", "Example@sample.co.za").strip()
-SMTP_PASS = os.environ.get("SMTP_PASS", "sample-smtp-password",)
+SMTP_USER = os.environ.get("SMTP_USER", "marcel@marketingss.co.za").strip()
+SMTP_PASS = os.environ.get("SMTP_PASS", "Eaveplay123!@#",)
 SMTP_SECURITY = os.environ.get("SMTP_SECURITY", "ssl").strip().lower()
 SMTP_DEBUG = os.environ.get("SMTP_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
 SMTP_TRY_FALLBACK = os.environ.get("SMTP_TRY_FALLBACK", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -960,8 +960,8 @@ class PlanningRow(db.Model):
     designer = db.Column(db.String(120), nullable=True)
     designer_warning_key = db.Column(db.String(64), nullable=True)
     designer_warning_sent_at = db.Column(db.DateTime, nullable=True)
-    Reviewer_warning_key = db.Column(db.String(64), nullable=True)
-    Reviewer_warning_sent_at = db.Column(db.DateTime, nullable=True)
+    clarise_warning_key = db.Column(db.String(64), nullable=True)
+    clarise_warning_sent_at = db.Column(db.DateTime, nullable=True)
     ready_warning_key = db.Column(db.String(64), nullable=True)
     ready_warning_sent_at = db.Column(db.DateTime, nullable=True)
 
@@ -1018,7 +1018,7 @@ class PlanningRow(db.Model):
             "creative_media_count": len(media_items),
             "designer": self.designer or "",
             "designer_warning_sent_at": self.designer_warning_sent_at.isoformat() if self.designer_warning_sent_at else None,
-            "Reviewer_warning_sent_at": self.Reviewer_warning_sent_at.isoformat() if self.Reviewer_warning_sent_at else None,
+            "clarise_warning_sent_at": self.clarise_warning_sent_at.isoformat() if self.clarise_warning_sent_at else None,
             "ready_warning_sent_at": self.ready_warning_sent_at.isoformat() if self.ready_warning_sent_at else None,
             "scheduled_post_id": self.scheduled_post_id,
             "created_at": self.created_at.isoformat(),
@@ -1111,12 +1111,12 @@ def ensure_runtime_schema() -> None:
     if "designer_warning_sent_at" not in columns:
         with db.engine.begin() as connection:
             connection.execute(text("ALTER TABLE planning_row ADD COLUMN designer_warning_sent_at DATETIME"))
-    if "Reviewer_warning_key" not in columns:
+    if "clarise_warning_key" not in columns:
         with db.engine.begin() as connection:
-            connection.execute(text("ALTER TABLE planning_row ADD COLUMN Reviewer_warning_key VARCHAR(64)"))
-    if "Reviewer_warning_sent_at" not in columns:
+            connection.execute(text("ALTER TABLE planning_row ADD COLUMN clarise_warning_key VARCHAR(64)"))
+    if "clarise_warning_sent_at" not in columns:
         with db.engine.begin() as connection:
-            connection.execute(text("ALTER TABLE planning_row ADD COLUMN Reviewer_warning_sent_at DATETIME"))
+            connection.execute(text("ALTER TABLE planning_row ADD COLUMN clarise_warning_sent_at DATETIME"))
     if "ready_warning_key" not in columns:
         with db.engine.begin() as connection:
             connection.execute(text("ALTER TABLE planning_row ADD COLUMN ready_warning_key VARCHAR(64)"))
@@ -1724,7 +1724,7 @@ def parse_designer_email_map(raw: str | None) -> dict[str, str]:
             continue
         separator = "=" if "=" in cleaned else ":" if ":" in cleaned else None
         if separator is None:
-            raise ValueError("Designer email mappings must use one entry per line in the form Name=Example@sample.co.za.")
+            raise ValueError("Designer email mappings must use one entry per line in the form Name=email@example.com.")
         name, email = cleaned.split(separator, 1)
         name = name.strip()
         email = email.strip()
@@ -2337,14 +2337,14 @@ def planning_warning_recipients_for_designer(designer_name: str | None) -> list[
     return default_admin_warning_recipients() or EMAIL_TO
 
 
-def planning_warning_recipients_for_Reviewer() -> list[str]:
-    # Temporary routing: Reviewer/admin warnings go to configured EMAIL_TO, else active owner/admin emails.
+def planning_warning_recipients_for_clarise() -> list[str]:
+    # Temporary routing: Clarise/admin warnings go to configured EMAIL_TO, else active owner/admin emails.
     return EMAIL_TO or default_admin_warning_recipients()
 
 
-def planning_row_missing_Reviewer_fields(row: PlanningRow) -> list[str]:
+def planning_row_missing_clarise_fields(row: PlanningRow) -> list[str]:
     missing: list[str] = []
-    for field_name, label in PLANNING_Reviewer_REQUIRED_FIELDS.items():
+    for field_name, label in PLANNING_CLARISE_REQUIRED_FIELDS.items():
         value = getattr(row, field_name, None)
         if not str(value or "").strip():
             missing.append(label)
@@ -2358,10 +2358,10 @@ def clear_planning_warning_state(row: PlanningRow, warning_type: str) -> bool:
             row.designer_warning_key = None
             row.designer_warning_sent_at = None
             changed = True
-    elif warning_type == "Reviewer":
-        if row.Reviewer_warning_key or row.Reviewer_warning_sent_at:
-            row.Reviewer_warning_key = None
-            row.Reviewer_warning_sent_at = None
+    elif warning_type == "clarise":
+        if row.clarise_warning_key or row.clarise_warning_sent_at:
+            row.clarise_warning_key = None
+            row.clarise_warning_sent_at = None
             changed = True
     elif warning_type == "ready":
         if row.ready_warning_key or row.ready_warning_sent_at:
@@ -2385,12 +2385,12 @@ def send_due_planning_warning_emails(now: datetime) -> None:
         page = row.sheet.page if row.sheet else None
         if row.is_non_actionable:
             changed = clear_planning_warning_state(row, "designer") or changed
-            changed = clear_planning_warning_state(row, "Reviewer") or changed
+            changed = clear_planning_warning_state(row, "clarise") or changed
             changed = clear_planning_warning_state(row, "ready") or changed
             continue
         if page is None or not notifications_enabled_for_page(page.id):
             changed = clear_planning_warning_state(row, "designer") or changed
-            changed = clear_planning_warning_state(row, "Reviewer") or changed
+            changed = clear_planning_warning_state(row, "clarise") or changed
             changed = clear_planning_warning_state(row, "ready") or changed
             continue
 
@@ -2408,7 +2408,7 @@ def send_due_planning_warning_emails(now: datetime) -> None:
         ):
             ready_warning_key = scheduled_dt.isoformat()
             if row.ready_warning_key != ready_warning_key:
-                subject = f"[Sample SoMe-Auto] Critical warning | Job not green-ready | {page.name} | {job_ref}"
+                subject = f"[MSS SoME-Auto] Critical warning | Job not green-ready | {page.name} | {job_ref}"
                 problems = ["Job Nr is not marked green and ready to post."]
                 body = (
                     "Critical warning-2 hours before scheduled post. Job not ready.\n\n"
@@ -2437,7 +2437,7 @@ def send_due_planning_warning_emails(now: datetime) -> None:
                 if send_email_message(
                     subject,
                     body,
-                    planning_warning_recipients_for_Reviewer(),
+                    planning_warning_recipients_for_clarise(),
                     html_body=html_body,
                 ):
                     row.ready_warning_key = ready_warning_key
@@ -2450,13 +2450,13 @@ def send_due_planning_warning_emails(now: datetime) -> None:
         deadline_warning_key = deadline_date.isoformat() if deadline_date else None
         if not deadline_warning_due or not deadline_warning_key:
             changed = clear_planning_warning_state(row, "designer") or changed
-            changed = clear_planning_warning_state(row, "Reviewer") or changed
+            changed = clear_planning_warning_state(row, "clarise") or changed
             continue
 
-        missing_fields = planning_row_missing_Reviewer_fields(row)
+        missing_fields = planning_row_missing_clarise_fields(row)
         if missing_fields:
-            if row.Reviewer_warning_key != deadline_warning_key:
-                subject = f"[Sample SoMe-Auto] Planning row incomplete before deadline | {page.name} | {job_ref}"
+            if row.clarise_warning_key != deadline_warning_key:
+                subject = f"[MSS SoME-Auto] Planning row incomplete before deadline | {page.name} | {job_ref}"
                 problems = [f"{field} has not been set." for field in missing_fields]
                 body = (
                     "Warning-deadline approaching. Post incomplete.\n\n"
@@ -2485,14 +2485,14 @@ def send_due_planning_warning_emails(now: datetime) -> None:
                 if send_email_message(
                     subject,
                     body,
-                    planning_warning_recipients_for_Reviewer(),
+                    planning_warning_recipients_for_clarise(),
                     html_body=html_body,
                 ):
-                    row.Reviewer_warning_key = deadline_warning_key
-                    row.Reviewer_warning_sent_at = now
+                    row.clarise_warning_key = deadline_warning_key
+                    row.clarise_warning_sent_at = now
                     changed = True
         else:
-            changed = clear_planning_warning_state(row, "Reviewer") or changed
+            changed = clear_planning_warning_state(row, "clarise") or changed
 
         if not creative_items:
             designer_name = (row.designer or "").strip()
@@ -2502,7 +2502,7 @@ def send_due_planning_warning_emails(now: datetime) -> None:
             if row.designer_warning_key == deadline_warning_key:
                 continue
 
-            subject = f"[Sample SoMe-Auto] Creative missing before deadline for {designer_name} | {page.name} | {job_ref}"
+            subject = f"[MSS SoME-Auto] Creative missing before deadline for {designer_name} | {page.name} | {job_ref}"
             problems = ["Design is missing."]
             body = (
                 "Warning-deadline approaching. Design missing.\n\n"
@@ -4042,10 +4042,11 @@ def simulate_platform_post(account: SocialAccount, post: Post, media_paths: list
 
 
 def scheduled_facebook_remote_result(post: Post) -> dict[str, Any]:
+    post_id = post.facebook_post_id or post.facebook_remote_post_id
     return {
         "success": True,
         "platform": "facebook",
-        "post_id": post.facebook_post_id,
+        "post_id": post_id,
         "post_url": post.platform_url_map().get("facebook"),
         "handed_off": True,
         "skip_apply_platform_result": True,
@@ -4101,6 +4102,13 @@ def upload_facebook_attached_media(
     return str(media_id)
 
 
+def facebook_attached_media_fields(media_ids: list[str]) -> dict[str, str]:
+    return {
+        f"attached_media[{index}]": json.dumps({"media_fbid": media_id})
+        for index, media_id in enumerate(media_ids)
+    }
+
+
 def record_facebook_remote_schedule(post: Post, remote_post_id: str) -> None:
     post.facebook_remote_post_id = remote_post_id
     post.facebook_remote_state = "scheduled"
@@ -4133,7 +4141,7 @@ def schedule_facebook_feed_post(
         "scheduled_publish_time": str(local_datetime_to_unix_timestamp(scheduled_time)),
     }
     if attached_media_ids:
-        payload["attached_media"] = json.dumps([{"media_fbid": media_id} for media_id in attached_media_ids])
+        payload.update(facebook_attached_media_fields(attached_media_ids))
 
     response = requests.post(
         f"https://graph.facebook.com/v19.0/{target_id}/feed",
@@ -4263,7 +4271,6 @@ def update_facebook_remote_post_record(post: Post, payload: dict[str, Any]) -> N
         post.facebook_remote_state = "published"
         post.facebook_post_id = post.facebook_post_id or post.facebook_remote_post_id
         apply_platform_result(post, "facebook", post.facebook_post_id, payload.get("permalink_url"))
-        reconcile_post_status_from_remote_publication(post)
     else:
         post.facebook_remote_state = "scheduled"
 
@@ -4379,7 +4386,7 @@ def publish_facebook_feed_post(
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"message": content, "access_token": account.access_token}
     if attached_media_ids:
-        payload["attached_media"] = json.dumps([{"media_fbid": media_id} for media_id in attached_media_ids])
+        payload.update(facebook_attached_media_fields(attached_media_ids))
 
     response = requests.post(
         f"https://graph.facebook.com/v19.0/{target_id}/feed",
@@ -4544,56 +4551,6 @@ def automated_platforms_for_post(post: Post) -> list[str]:
     return [platform for platform in post.platform_list() if platform != "linkedin"]
 
 
-def inferred_automated_results_from_saved_state(post: Post) -> list[dict[str, Any]]:
-    url_map = build_post_platform_urls(post)
-    platform_ids = {
-        "facebook": post.facebook_post_id or post.facebook_remote_post_id,
-        "instagram": post.instagram_post_id,
-        "twitter": post.twitter_post_id,
-        "pinterest": post.pinterest_post_id,
-    }
-    results: list[dict[str, Any]] = []
-
-    for platform in automated_platforms_for_post(post):
-        platform_post_id = platform_ids.get(platform)
-        success = False
-        if platform == "facebook":
-            success = post.facebook_remote_state == "published" or bool(platform_post_id)
-        else:
-            success = bool(platform_post_id)
-
-        if success:
-            results.append(
-                {
-                    "success": True,
-                    "platform": platform,
-                    "post_id": platform_post_id,
-                    "post_url": url_map.get(platform),
-                }
-            )
-            continue
-
-        results.append(
-            {
-                "success": False,
-                "platform": platform,
-                "error": "Platform publish was not confirmed during reconciliation.",
-            }
-        )
-
-    return results
-
-
-def reconcile_post_status_from_remote_publication(post: Post) -> None:
-    if post.status not in {"scheduled", "posting", "manual_pending"}:
-        return
-
-    if post.facebook_remote_state != "published":
-        return
-
-    finalize_post_status_after_execution(post, inferred_automated_results_from_saved_state(post))
-
-
 def twitter_oauth1(account: SocialAccount) -> OAuth1:
     if OAuth1 is None:
         raise RuntimeError("requests-oauthlib is not installed. Install backend requirements first.")
@@ -4629,44 +4586,31 @@ def post_to_facebook_live(account: SocialAccount, post: Post, media_paths: list[
     if not media_paths:
         return publish_facebook_feed_post(account, target_id, content, [])
 
-    attached_media_ids = [upload_facebook_attached_media(account, target_id, media) for media in media_paths]
-
-    try:
-        return publish_facebook_feed_post(account, target_id, content, attached_media_ids)
-    except Exception as error:
-        if len(media_paths) != 1:
-            raise
-
+    if len(media_paths) == 1 and is_video_path(media_paths[0]):
         media_path = Path(media_paths[0])
         if not media_path.exists():
-            raise RuntimeError(f"Media file not found: {media_path}") from error
+            raise RuntimeError(f"Media file not found: {media_path}")
 
-        logger.info(
-            "Facebook feed-style publish failed for single-media post %s; falling back to direct media upload: %s",
-            post.id,
-            error,
-        )
-
-        if is_video_path(str(media_path)):
-            with media_path.open("rb") as media_file:
-                response = requests.post(
-                    f"{base_url}/{target_id}/videos",
-                    data={"description": content, "access_token": account.access_token},
-                    files={"source": media_file},
-                    timeout=API_TIMEOUT_SECONDS,
-                )
-        else:
-            with media_path.open("rb") as media_file:
-                response = requests.post(
-                    f"{base_url}/{target_id}/photos",
-                    data={"message": content, "access_token": account.access_token},
-                    files={"source": media_file},
-                    timeout=API_TIMEOUT_SECONDS,
-                )
+        with media_path.open("rb") as media_file:
+            response = requests.post(
+                f"{base_url}/{target_id}/videos",
+                data={"description": content, "access_token": account.access_token},
+                files={"source": media_file},
+                timeout=API_TIMEOUT_SECONDS,
+            )
 
         payload = ensure_success(response, "Facebook")
         post_id = payload.get("id")
         return {"success": True, "platform": "facebook", "post_id": post_id, "post_url": build_platform_post_url(account, "facebook", post_id)}
+
+    if any(is_video_path(media) for media in media_paths):
+        raise RuntimeError(
+            "Facebook feed attachment publishing supports photo sets only. "
+            "Use a single video post or remove videos from the multi-media Facebook post."
+        )
+
+    attached_media_ids = [upload_facebook_attached_media(account, target_id, media) for media in media_paths]
+    return publish_facebook_feed_post(account, target_id, content, attached_media_ids)
 
 
 def twitter_upload_media(oauth: OAuth1, media_file_path: str) -> str:
@@ -5077,7 +5021,7 @@ def post_to_pinterest_live(account: SocialAccount, post: Post, media_paths: list
     board_id = resolve_pinterest_board_id(account)
     payload = {
         "board_id": board_id,
-        "title": (post.content or "Sample SoMe-Auto Post")[:100],
+        "title": (post.content or "MSS SoME-Auto Post")[:100],
         "description": post.content or "",
         "media_source": {"source_type": "image_url", "url": media_url},
     }
@@ -5107,15 +5051,6 @@ def publish_to_platform(
     if account.platform == "facebook":
         if post.facebook_remote_post_id:
             return scheduled_facebook_remote_result(post)
-        if live_posting_enabled:
-            return {
-                "success": False,
-                "platform": "facebook",
-                "error": (
-                    "Facebook direct publishing is disabled. This post was not handed off to Meta's native "
-                    f"scheduler at least {FACEBOOK_NATIVE_SCHEDULE_BUFFER_MINUTES} minutes early, so it must be rescheduled."
-                ),
-            }
 
     if not live_posting_enabled:
         return simulate_platform_post(account, post, media_paths)
@@ -5269,7 +5204,7 @@ def apply_planning_row_non_actionable_state(row: PlanningRow, next_is_non_action
             row.scheduled_post_id = None
 
         clear_planning_warning_state(row, "designer")
-        clear_planning_warning_state(row, "Reviewer")
+        clear_planning_warning_state(row, "clarise")
         clear_planning_warning_state(row, "ready")
         row.job_color = "#D9D9D9"
         row.is_non_actionable = True
@@ -5308,7 +5243,6 @@ def schedule_post_from_planning_row_record(
         raise RuntimeError("Invalid Date/Time in planning row. Use date + time values.")
     if scheduled_dt <= utcnow():
         raise RuntimeError("Planning rows can only be scheduled for future date/time values.")
-    validate_facebook_native_schedule_time(page, scheduled_dt)
 
     content = (row.post_copy or "").strip()
     if not content:
@@ -5335,18 +5269,6 @@ def schedule_post_from_planning_row_record(
     db.session.add(post)
     db.session.commit()
 
-    facebook_account = get_active_page_account(page, "facebook")
-    if facebook_account and should_use_live_posting(page.id):
-        resolved_media = [str(resolve_upload_path(item)) for item in media_items]
-        try:
-            remote_post_id = schedule_facebook_remote_post(facebook_account, post, resolved_media)
-        except Exception:
-            db.session.delete(post)
-            db.session.commit()
-            raise
-        record_facebook_remote_schedule(post, remote_post_id)
-        db.session.commit()
-
     row.scheduled_post_id = post.id
     row.job_color = PLANNING_SCHEDULED_COLOR
     db.session.commit()
@@ -5358,6 +5280,68 @@ def schedule_post_from_planning_row_record(
         scheduled_dt.isoformat(),
     )
     return row, post
+
+
+def publish_post_from_planning_row_record(
+    row: PlanningRow,
+    *,
+    require_ready_color: bool = True,
+    trigger: str = "manual_publish_now",
+) -> tuple[PlanningRow, Post, list[dict[str, Any]]]:
+    page = row.sheet.page if row.sheet else None
+    if page is None:
+        raise RuntimeError("Planning row is not linked to a page.")
+
+    if row.is_non_actionable:
+        raise RuntimeError("This is a non-actionable planning row and cannot be published.")
+
+    if row.scheduled_post_id:
+        raise RuntimeError("Planning row is already linked to a post.")
+
+    if require_ready_color and (row.job_color or "").upper() != PLANNING_READY_COLOR:
+        raise RuntimeError(
+            f"Job Nr color must be {PLANNING_READY_COLOR} (Content approved, schedule post) before publishing."
+        )
+
+    content = (row.post_copy or "").strip()
+    if not content:
+        raise RuntimeError("Post Copy is required to publish from planning row.")
+
+    media_items = row.creative_media_list()
+    if not media_items:
+        raise RuntimeError("Creative media is required (column 13) to publish.")
+    validate_page_creative_media(page, media_items)
+
+    platforms = get_active_page_platforms(page)
+    if not platforms:
+        raise RuntimeError("No active social platforms connected for this page.")
+
+    post = Post(
+        page_id=page.id,
+        content=content,
+        media_paths=json.dumps(media_items),
+        media_type=detect_media_type(media_items),
+        platforms=json.dumps(platforms),
+        scheduled_time=utcnow(),
+        status="posting",
+    )
+    db.session.add(post)
+    db.session.commit()
+
+    row.scheduled_post_id = post.id
+    row.job_color = PLANNING_SCHEDULED_COLOR
+    db.session.commit()
+
+    logger.info("Planning row %s created immediate publish post %s via %s trigger.", row.id, post.id, trigger)
+    results = execute_post(post.id)
+
+    try:
+        db.session.refresh(row)
+        db.session.refresh(post)
+    except Exception:
+        pass
+
+    return row, post, results
 
 
 def execute_post(post_id: int) -> list[dict[str, Any]]:
@@ -5514,8 +5498,6 @@ def process_due_posts() -> None:
         now = utcnow()
         send_due_planning_warning_emails(now)
         auto_schedule_due_planning_rows(now)
-        handoff_pending_facebook_remote_posts(now)
-        sync_facebook_remote_posts()
         due_posts = (
             Post.query.filter(Post.status == "scheduled", Post.scheduled_time <= now)
             .order_by(Post.scheduled_time.asc())
@@ -6253,7 +6235,7 @@ def health() -> Any:
     return jsonify(
         {
             "status": "healthy",
-            "app": "Sample SoMe-Auto",
+            "app": "MSS SoME-Auto",
             "timestamp": utcnow().isoformat(),
             "timezone": APP_TIMEZONE_NAME,
         }
@@ -7258,6 +7240,31 @@ def schedule_from_planning_row(row_id: int) -> Any:
     )
 
 
+@app.route("/api/planning/rows/<int:row_id>/publish", methods=["POST"])
+@jwt_required()
+@require_roles("developer", "admin")
+def publish_from_planning_row(row_id: int) -> Any:
+    row = PlanningRow.query.options(joinedload(PlanningRow.sheet).joinedload(PlanningSheet.page)).get_or_404(row_id)
+    try:
+        row, post, results = publish_post_from_planning_row_record(row, require_ready_color=True)
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 400
+
+    success_count = len([result for result in results if result.get("success")])
+    failure_count = len([result for result in results if not result.get("success")])
+    return jsonify(
+        {
+            "message": (
+                f"Publish now finished: {success_count} succeeded"
+                f"{f', {failure_count} failed' if failure_count else ''}."
+            ),
+            "row": row.to_dict(),
+            "post": post.to_dict(),
+            "results": results,
+        }
+    )
+
+
 @app.route("/api/planning/import-csvs", methods=["POST"])
 @jwt_required()
 @require_roles("developer", "admin")
@@ -7809,4 +7816,3 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
 else:
     start_scheduler()
-

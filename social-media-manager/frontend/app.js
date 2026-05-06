@@ -1,4 +1,4 @@
-﻿const API_BASE = `${window.location.origin}/api`;
+const API_BASE = `${window.location.origin}/api`;
 const STORAGE_KEY = "mss_some_auto_session";
 const TABS = ["pages", "scheduled", "posted", "planning", "settings", "integrations"];
 const PLATFORMS = ["facebook", "instagram", "linkedin", "twitter", "pinterest"];
@@ -31,7 +31,7 @@ const PLANNING_JOB_COLORS = [
   { hex: "#FBBC04", label: "content approved" },
   { hex: "#FF6D01", label: "design started" },
   { hex: "#34A853", label: "content approved, schedule post" },
-  { hex: "#137333", label: "Image has been sent to Reviewer." },
+  { hex: "#137333", label: "Image has been sent to Clarise." },
   { hex: "#0B57D0", label: "Post in scheduler" },
   { hex: "#980000", label: "stop post" },
   { hex: "#9900FF", label: "share" },
@@ -51,7 +51,7 @@ const PLANNING_COLUMNS = [
   { key: "mss_notes", label: "MSS Notes", width: 240, type: "textarea", rows: 4 },
   { key: "creative_media", label: "Creative", width: 220, type: "media" },
   { key: "designer", label: "Designer", width: 140, type: "select" },
-  { key: "schedule_action", label: "Schedule", width: 170, type: "action" },
+  { key: "schedule_action", label: "Schedule", width: 210, type: "action" },
 ];
 const PLANNING_EDITABLE_COLUMNS = PLANNING_COLUMNS.filter(
   (column) => !["media", "action"].includes(column.type)
@@ -71,7 +71,7 @@ const FAQ_ITEMS = [
   {
     question: "Why do Instagram/Pinterest posts require PUBLIC_BASE_URL?",
     answer:
-      "Those APIs need externally reachable media URLs. Sample SoMe-Auto creates signed temporary links from your uploads when PUBLIC_BASE_URL is configured.",
+      "Those APIs need externally reachable media URLs. MSS SoME-Auto creates signed temporary links from your uploads when PUBLIC_BASE_URL is configured.",
   },
   {
     question: "What does live_posting_enabled do?",
@@ -81,12 +81,12 @@ const FAQ_ITEMS = [
   {
     question: "How does token refresh work?",
     answer:
-      "Facebook and Instagram now use one global Meta user token from Settings. Sample SoMe-Auto exchanges that token immediately, warns when it has less than 3 days left, re-derives Facebook Page tokens from it, and applies it automatically to Instagram accounts so the admin only rotates one Meta token in one place.",
+      "Facebook and Instagram now use one global Meta user token from Settings. MSS SoME-Auto exchanges that token immediately, warns when it has less than 3 days left, re-derives Facebook Page tokens from it, and applies it automatically to Instagram accounts so the admin only rotates one Meta token in one place.",
   },
   {
     question: "What Meta Graph API details do I need?",
     answer:
-      "Create a Meta app in the Meta for Developers dashboard, add Facebook Login plus the Facebook/Instagram permissions you need, store the Facebook App ID and App Secret once in Global Settings, generate a Meta user token in your OAuth flow or Graph API Explorer, then paste that token into Global Settings. Facebook page setup only needs the Facebook Page ID, and Instagram setup only needs the Instagram business account ID. Sample SoMe-Auto exchanges the Meta token automatically and uses it to derive Facebook Page tokens.",
+      "Create a Meta app in the Meta for Developers dashboard, add Facebook Login plus the Facebook/Instagram permissions you need, store the Facebook App ID and App Secret once in Global Settings, generate a Meta user token in your OAuth flow or Graph API Explorer, then paste that token into Global Settings. Facebook page setup only needs the Facebook Page ID, and Instagram setup only needs the Instagram business account ID. MSS SoME-Auto exchanges the Meta token automatically and uses it to derive Facebook Page tokens.",
   },
   {
     question: "How do I get LinkedIn API credentials?",
@@ -448,6 +448,10 @@ function canDeletePlanningRows() {
   return ["developer", "admin"].includes(currentRole());
 }
 
+function canPublishPlanningRows() {
+  return ["developer", "admin"].includes(currentRole());
+}
+
 function canImportPlanningCsv() {
   return ["developer", "admin"].includes(currentRole());
 }
@@ -745,7 +749,7 @@ function renderFacebookRemoteStatus(post) {
 
   return `
     <div class="post-remote-status">
-      <p class="muted">Facebook handoff: ${escapeHtml(detail)}</p>
+      <p class="muted">Facebook Meta status: ${escapeHtml(detail)}</p>
       ${remote.last_error ? `<p class="muted">Facebook sync issue: ${escapeHtml(remote.last_error)}</p>` : ""}
     </div>
   `;
@@ -1684,7 +1688,7 @@ function renderLogin() {
   appEl.innerHTML = `
     <section class="auth-wrap">
       <div class="brand">
-        <h1>Sample SoMe-Auto</h1>
+        <h1>MSS SoME-Auto</h1>
         <p>Publishing control center</p>
       </div>
       <form id="login-form" class="panel auth-panel">
@@ -1738,7 +1742,7 @@ function renderApp() {
     <section class="shell">
       <header class="panel topbar">
         <div>
-          <h1>Sample SoMe-Auto</h1>
+          <h1>MSS SoME-Auto</h1>
           <p>Welcome, ${escapeHtml(currentUserDisplayName())}</p>
         </div>
         <div class="row stats-inline">
@@ -2170,6 +2174,10 @@ function renderPlanningCell(row, column) {
     const alreadyLinked = Boolean(row.scheduled_post_id);
     const isNonActionable = Boolean(row.is_non_actionable);
     const scheduleDisabled = rowLockedToPastMonth || alreadyLinked || isNonActionable;
+    const publishDisabled = alreadyLinked || isNonActionable;
+    const publishButton = canPublishPlanningRows()
+      ? `<button class="small danger" data-planning-publish-now="${row.id}" ${publishDisabled ? "disabled" : ""}>Post Now</button>`
+      : "";
     return `
       <td class="planning-cell planning-action-cell${activeClass}" data-planning-col="${field}" data-row-cell="${row.id}:${field}" style="width:${width}px;min-width:${width}px;max-width:${width}px;">
         ${
@@ -2177,6 +2185,7 @@ function renderPlanningCell(row, column) {
             ? `<button class="small ghost" data-planning-activate="${row.id}">Activate Row</button>`
             : `
                 <button class="small" data-planning-schedule="${row.id}" ${scheduleDisabled ? "disabled" : ""}>Schedule Now</button>
+                ${publishButton}
                 <button class="small ghost" data-planning-disable="${row.id}">Disable Row</button>
               `
         }
@@ -2298,6 +2307,7 @@ function renderPlanningTab() {
           },
         ];
   const viewingPastMonth = isPastPlanningMonth(selectedMonth);
+  const publishActionLabel = canPublishPlanningRows() ? ", <code>Post Now</code>," : "";
   const sheetOptions =
     state.planningSheets.length > 0
       ? state.planningSheets
@@ -2414,7 +2424,7 @@ function renderPlanningTab() {
           </tbody>
         </table>
       </div>
-        <p class="muted">Active rows show <code>Schedule Now</code> and <code>Disable Row</code>. NA rows show <code>Activate Row</code> and stay ignored by warning emails and scheduling. Scheduling only works when Job Nr color is ${PLANNING_READY_COLOR}. When scheduled it switches to ${PLANNING_SCHEDULED_COLOR}, when posted it switches to ${PLANNING_POSTED_COLOR}, and failed posts turn black automatically. If auto-schedule is enabled, today&apos;s unscheduled rows with copy, creatives, and the ready-to-schedule green color are scheduled early enough to preserve at least a 25-minute Facebook handoff buffer before their target time. Past date/time rows cannot be scheduled.</p>
+        <p class="muted">Active rows show <code>Schedule Now</code>${publishActionLabel} and <code>Disable Row</code>. NA rows show <code>Activate Row</code> and stay ignored by warning emails and scheduling. Scheduling and posting only work when Job Nr color is ${PLANNING_READY_COLOR}. When scheduled it switches to ${PLANNING_SCHEDULED_COLOR}, when posted it switches to ${PLANNING_POSTED_COLOR}, and failed posts turn black automatically. If auto-schedule is enabled, today&apos;s unscheduled rows with copy, creatives, and the ready-to-schedule green color are scheduled for their target time. Past date/time rows cannot be scheduled.</p>
     </section>
   `;
 }
@@ -2543,7 +2553,7 @@ function renderUserManagementPanel() {
           <form id="user-form">
             <label>Username<input name="username" type="text" value="${escapeHtml(editor.username)}" ${editing ? "readonly" : ""} required /></label>
             <label>Display Name<input name="display_name" type="text" value="${escapeHtml(editor.display_name)}" placeholder="Shown in the planner and UI" /></label>
-            <label>Email<input name="email" type="email" value="${escapeHtml(editor.email)}" placeholder="Example@sample.co.za" /></label>
+            <label>Email<input name="email" type="email" value="${escapeHtml(editor.email)}" placeholder="name@example.com" /></label>
             <label>Role
               <select name="role" ${editor.is_owner ? "disabled" : ""}>
                 <option value="developer" ${editor.role === "developer" ? "selected" : ""}>developer</option>
@@ -2636,7 +2646,7 @@ function renderSettingsTab() {
         }
         <h3>General Settings</h3>
         <form id="settings-form">
-          <label>App Name<input name="app_name" type="text" value="${escapeHtml(state.settings.app_name || "Sample SoMe-Auto")}" ${isPageScope ? "disabled" : ""} /></label>
+          <label>App Name<input name="app_name" type="text" value="${escapeHtml(state.settings.app_name || "MSS SoME-Auto")}" ${isPageScope ? "disabled" : ""} /></label>
           <label>Default Post Time<input name="default_post_time" type="time" value="${escapeHtml(state.settings.default_post_time || "10:00")}" /></label>
           <label>Timezone<input name="timezone" type="text" value="${escapeHtml(state.settings.timezone || "Africa/Johannesburg")}" /></label>
           <label>Auto Schedule
@@ -2670,8 +2680,8 @@ function renderSettingsTab() {
                 <label>Meta API Version<input name="monthly_insights_meta_api_version" type="text" value="${escapeHtml(state.settings.monthly_insights_meta_api_version || "v24.0")}" placeholder="v24.0" autocomplete="off" /></label>
                 <label>Google Service Account JSON<textarea name="monthly_insights_google_service_account_json" rows="10" placeholder='Paste the full Google service account JSON key here.'>${escapeHtml(state.settings.monthly_insights_google_service_account_json || "")}</textarea></label>
                 <p class="muted">The monthly sync matches worksheet tab names to Page names, writes the previous month into the matching month column, and fills the Facebook/Instagram rows in place.</p>
-                <label>Designer Email Routing<textarea name="designer_email_map" rows="5" placeholder="Emma=Example@sample.co.za&#10;Quinton=Example@sample.co.za">${escapeHtml(state.settings.designer_email_map || "")}</textarea></label>
-                <p class="muted">Use one designer-to-email mapping per line in the form <code>Name=Example@sample.co.za</code>. This controls who receives missing-creative warning emails.</p>
+                <label>Designer Email Routing<textarea name="designer_email_map" rows="5" placeholder="Emma=emma@example.com&#10;Quinton=quinton@example.com">${escapeHtml(state.settings.designer_email_map || "")}</textarea></label>
+                <p class="muted">Use one designer-to-email mapping per line in the form <code>Name=email@example.com</code>. This controls who receives missing-creative warning emails.</p>
               `
           }
           <p class="muted">Set PUBLIC_BASE_URL for temporary signed media links used by Instagram/Pinterest uploads.</p>
@@ -4985,6 +4995,22 @@ function wirePlanningTab() {
     });
   });
 
+  document.querySelectorAll("[data-planning-publish-now]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const rowId = button.getAttribute("data-planning-publish-now");
+      if (!window.confirm("Publish this planning row immediately? This can create live platform posts if live posting is enabled.")) {
+        return;
+      }
+      try {
+        const result = await api(`/planning/rows/${rowId}/publish`, { method: "POST" });
+        await refreshAfterManualAction();
+        notify(result?.message || "Planning row published", "success", 10000);
+      } catch (error) {
+        notify(error.message, "error", 10000);
+      }
+    });
+  });
+
   document.querySelectorAll("[data-planning-activate]").forEach((button) => {
     button.addEventListener("click", async () => {
       const rowId = button.getAttribute("data-planning-activate");
@@ -5469,4 +5495,3 @@ async function boot() {
 }
 
 boot();
-

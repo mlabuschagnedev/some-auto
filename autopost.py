@@ -1,12 +1,19 @@
-﻿import os
+import os
 import sys
 import re
 import uuid
 import json
 import hashlib
+import base64
 import datetime
+import mimetypes
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Optional, Tuple
+from urllib import request as urllib_request
+from urllib import error as urllib_error
 
 from zoneinfo import ZoneInfo
 from google.oauth2 import service_account
@@ -15,18 +22,55 @@ import win32com.client
 import pywintypes
 
 BASE_PATH = os.environ.get("AUTOPOST_BASE_PATH", r"C:\AutoPosts")
-Reviewer_FOLDER_NAME = "Reviewer"
-Reviewer_SENDER_EMAIL = "Example@sample.co.za"
+CLARISE_FOLDER_NAME = "Clarise"
+CLARISE_SENDER_EMAIL = "clarise@marketingss.co.za"
 BAIE_ACK_ALLOWED_WORDS = {"baie", "dankie"}
+QUARANTINE_FOLDER_NAME = os.environ.get("AUTOPOST_QUARANTINE_FOLDER", "Needs Review")
+ROUTING_AUDIT_ENABLED = os.environ.get("AUTOPOST_SAVE_ROUTING_AUDIT", "1").strip().lower() in {"1", "true", "yes", "on"}
+AI_ROUTING_ENABLED = os.environ.get("AUTOPOST_AI_ROUTING_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+AI_CONFIDENCE_THRESHOLD = float(os.environ.get("AUTOPOST_AI_CONFIDENCE_THRESHOLD", "4.0"))
+AI_MODEL = os.environ.get("AUTOPOST_AI_MODEL", "gpt-4.1-mini")
+AI_TIMEOUT_SECONDS = int(os.environ.get("AUTOPOST_AI_TIMEOUT_SECONDS", "45"))
+AI_MAX_IMAGE_BYTES = int(os.environ.get("AUTOPOST_AI_MAX_IMAGE_BYTES", str(4 * 1024 * 1024)))
 SERVICE_ACCOUNT_FILE = os.environ.get(
-    "AUTOPOST_GOOGLE_SERVICE_ACCOUNT", r"E:\Example\Documents\Coding-Projects\SoMe-Auto\example-service-account.json"
+    "AUTOPOST_GOOGLE_SERVICE_ACCOUNT", r"E:\Marcel\Documents\Coding-Projects\SoMe-Auto\some-auto-480808-200efd36e05c.json"
 )
-SHEET_ID = os.environ.get("AUTOPOST_SHEET_ID", "sample-google-sheet-id")
+SHEET_ID = "1QQM1gBKBZxG3Y4A2A_EUlXRaExlfy_GQc24kxbAO_Js"
 # The only active company for now; everything else is left wired but inactive.
-ACTIVE_COMPANY_ONLY = os.environ.get("AUTOPOST_ACTIVE_COMPANY_ONLY", "Sample Brand A")
+ACTIVE_COMPANY_ONLY = os.environ.get("AUTOPOST_ACTIVE_COMPANY_ONLY", "UD Trucks East London")
 TZ = ZoneInfo("Africa/Johannesburg")
 TARGET_GREEN_RGB = (52, 168, 83)
 INLINE_IMAGE_MAX_BYTES = int(os.environ.get("AUTOPOST_INLINE_IMAGE_MAX_BYTES", 5 * 1024))
+ROUTABLE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+ROUTABLE_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+LAUBSTAR_SHARED_COMPANY_NAME = "UD Group"
+LAUBSTAR_SHARED_MEMBERS = {
+    "UD Trucks Lichtenburg",
+    "UD Trucks Upington",
+    "UD Trucks Klerksdorp",
+    "UD Trucks Kathu",
+}
+LAUBSTAR_SHARED_TRIGGERS = {
+    "laubstar group",
+    "ud group",
+    "ud trucks group",
+    "ud trucks laubstar group",
+    "schedule for laubstar",
+}
+WEAK_ALIASES = {
+    "alrode",
+    "boksburg",
+    "east london",
+    "kathu",
+    "kld",
+    "kt",
+    "ltx",
+    "mahindra",
+    "powerstar",
+    "upt",
+    "laubstar",
+    "laubstar group",
+}
 SUPPORTED_PLATFORMS = {
     p.strip().lower()
     for p in os.environ.get("AUTOPOST_SUPPORTED_PLATFORMS", "facebook,instagram").split(",")
@@ -50,7 +94,9 @@ VIEWPORT_SIZE = {"width": 1920, "height": 1080}
 
 # Sheet overrides when worksheet names differ.
 SHEET_NAME_OVERRIDES = {
-    "Sample Branch Long Name": "Sample Branch",
+    "UD Trucks Lichtenburg": "UD Trucks LTX",
+    "UD Trucks Klerksdorp": "UD Trucks KLD",
+    "UD Trucks Upington": "UD Trucks UPT",
 }
 PLATFORM_URLS = {
     "facebook": "https://business.facebook.com/latest/home",
@@ -58,19 +104,38 @@ PLATFORM_URLS = {
     "linkedin": "https://www.linkedin.com/feed/",
 }
 SHEET_BASE_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
-FACEBOOK_PAGE_ID = os.environ.get("AUTOPOST_FACEBOOK_PAGE_ID", "123456789012345")
-FACEBOOK_PAGE_URL = os.environ.get(
-    "AUTOPOST_FACEBOOK_PAGE_URL",
-    f"https://business.facebook.com/latest/home?asset_id={FACEBOOK_PAGE_ID}",
-)
+FACEBOOK_PAGE_ID = "122499280942211"
+FACEBOOK_PAGE_URL = "https://business.facebook.com/latest/home?nav_ref=biz_unified_f3_login_page_to_mbs&asset_id=122499280942211"
 
 # Known companies with aliases for robust matching
 
 # Known companies with aliases for robust matching
 COMPANIES: List[Dict[str, str | List[str]]] = [
-    {"name": "Sample Brand A", "aliases": ["Sample Brand A", "Sample A"]},
-    {"name": "Sample Brand B", "aliases": ["Sample Brand B", "Sample B"]},
-    {"name": "Sample Branch", "aliases": ["Sample Branch", "Branch A"]},
+    {"name": "FAW Trucks Germiston", "aliases": ["FAW Trucks Germiston", "FAW Germiston"]},
+    {"name": "UD Trucks Alrode", "aliases": ["UD Trucks Alrode", "Alrode"]},
+    {"name": "Priemier Workwear KZN", "aliases": ["Priemier Workwear KZN", "Premier Workwear KZN", "Workwear KZN"]},
+    {"name": "Ctrack Botswana", "aliases": ["Ctrack Botswana"]},
+    {"name": "UD Trucks Boksburg", "aliases": ["UD Trucks Boksburg", "Boksburg"]},
+    {
+        "name": "FAW Trucks LBS",
+        "aliases": [
+            "FAW Trucks LBS",
+            "FAW Trucks Laubstar",
+            "FAW Laubstar Group",
+            "FAW Group",
+        ],
+    },
+    {"name": "UD Group", "aliases": ["Laubstar Group","UD Trucks Laubstar Group", "UD Trucks Group"]},
+    {"name": "Laubstar", "aliases": ["Laubstar Fleet services","Laubstar", "Laubstar Fleet"]},
+    {"name": "UD Trucks Lichtenburg", "aliases": ["UD Trucks Lichtenburg", "LTX", "UD Trucks LTX"]},
+    {"name": "UD Trucks Klerksdorp", "aliases": ["UD Trucks Klerksdorp", "KLD", "UD Trucks KLD"]},
+    {"name": "UD Trucks Upington", "aliases": ["UD Trucks Upington", "UPT", "UD Trucks UPT"]},
+    {"name": "UD Trucks Kathu", "aliases": ["UD Trucks Kathu", "Kathu"]},
+    {"name": "Mahindra Centurion", "aliases": ["Mahindra Centurion", "Mahindra"]},
+    {"name": "UD Trucks East London", "aliases": ["UD Trucks East London", "East London"]},
+    {"name": "Powerstar Klerksdorp", "aliases": ["Powerstar Klerksdorp", "Powerstar"]},
+    {"name": "MSS", "aliases": ["MSS", "Marketing Support Services"]},
+    {"name": "BBP", "aliases": ["BBP", "Big Brand Productions", "Big Brand Productions."]},
 ]
 
 _EXTRA_COMPANIES_CACHE: Optional[List[Dict[str, List[str]]]] = None
@@ -118,6 +183,21 @@ class PostingTask:
     sheet_gid: Optional[int]
     sheet_row_index: int  # 1-based for spreadsheet APIs
     matched_via: str
+
+
+@dataclass
+class RoutingDecision:
+    target_company: Optional[str]
+    confidence: float
+    method: str
+    reason: str
+    candidates: List[str]
+    alternatives: List[str]
+    raw_ai: Optional[Dict[str, Any]] = None
+
+    @property
+    def should_quarantine(self) -> bool:
+        return not self.target_company or self.confidence < AI_CONFIDENCE_THRESHOLD
 
 
 def load_sheets_service():
@@ -766,6 +846,96 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
 
+def extract_clean_instruction_block(body: str) -> str:
+    """
+    Keep only the fresh instruction area of an email.
+    This avoids routing from quoted replies, signatures, and forwarded chains.
+    """
+    if not body:
+        return ""
+
+    stop_patterns = [
+        r"^\s*-{2,}\s*original message\s*-{2,}\s*$",
+        r"^\s*from:\s+",
+        r"^\s*sent:\s+",
+        r"^\s*to:\s+",
+        r"^\s*subject:\s+",
+        r"^\s*on .+ wrote:\s*$",
+        r"^\s*kind regards\b",
+        r"^\s*best regards\b",
+        r"^\s*regards\b",
+        r"^\s*thank you[.!]?\s*$",
+        r"^\s*thanks[.!]?\s*$",
+        r"^\s*baie dankie[.!]?\s*$",
+    ]
+    lines: List[str] = []
+    for raw_line in body.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.rstrip()
+        if any(re.match(pattern, line, flags=re.IGNORECASE) for pattern in stop_patterns):
+            break
+        lines.append(line)
+
+    cleaned = "\n".join(lines).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned
+
+
+def _alias_is_weak(alias: str) -> bool:
+    return _normalize_text(alias) in WEAK_ALIASES
+
+
+def _company_alias_hits(text: str, subject: str = "", include_weak: bool = True) -> List[str]:
+    search_space = f" {_normalize_text(text)} {_normalize_text(subject)} "
+    found: List[str] = []
+    seen = set()
+
+    for entry in _company_catalog():
+        canonical = str(entry["name"])
+        aliases = entry["aliases"]
+        for alias in aliases:
+            if _alias_is_weak(str(alias)) and not include_weak:
+                continue
+            norm_alias = f" {_normalize_text(str(alias))} "
+            if norm_alias.strip() and norm_alias in search_space:
+                if canonical not in seen:
+                    seen.add(canonical)
+                    found.append(canonical)
+                break
+
+    return found
+
+
+def _structured_company_targets(text: str, subject: str = "") -> List[str]:
+    targets: List[str] = []
+    seen = set()
+    patterns = [
+        r"^\s*(?:company|client|page|account|dealership|branch)\s*[:\-]\s*(.+?)\s*$",
+        r"^\s*(?:for|schedule for|post for)\s*[:\-]\s*(.+?)\s*$",
+    ]
+    candidates = [subject] + text.splitlines()[:12]
+
+    for line in candidates:
+        for pattern in patterns:
+            match = re.match(pattern, line or "", flags=re.IGNORECASE)
+            if not match:
+                continue
+            hits = _company_alias_hits(match.group(1), include_weak=True)
+            for hit in hits:
+                if hit not in seen:
+                    seen.add(hit)
+                    targets.append(hit)
+
+    return targets
+
+
+def detect_laubstar_shared_route(text: str, subject: str = "") -> bool:
+    search_space = f" {_normalize_text(text)} {_normalize_text(subject)} "
+    if any(f" {trigger} " in search_space for trigger in LAUBSTAR_SHARED_TRIGGERS):
+        return True
+    detected = set(_company_alias_hits(text, subject, include_weak=True))
+    return len(detected.intersection(LAUBSTAR_SHARED_MEMBERS)) >= 2
+
+
 def starts_with_baie_dankie_ack(body: str) -> bool:
     """
     Return True if the first two alphabetic words are combinations of 'baie'/'dankie'.
@@ -803,24 +973,27 @@ def mark_mail_read_and_complete_flag(mail) -> bool:
 
 def extract_companies_from_body(body: str, subject: str = "") -> List[str]:
     """
-    Match against a catalog of known companies/aliases in body and subject.
+    Match against known companies in the fresh instruction block and subject.
+    Weak aliases are only used as fallback evidence, so quoted/contextual words
+    like "Mahindra" or "East London" don't overpower stronger page names.
     Returns canonical company names in order of detection.
     """
-    catalog = _company_catalog()
-    search_space = f" {_normalize_text(body)} {_normalize_text(subject)} "
+    clean_body = extract_clean_instruction_block(body)
     found: List[str] = []
     seen = set()
 
-    for entry in catalog:
-        canonical = entry["name"]
-        aliases = entry["aliases"]
-        for alias in aliases:
-            norm_alias = f" {_normalize_text(alias)} "
-            if norm_alias and norm_alias in search_space:
-                if canonical not in seen:
-                    seen.add(canonical)
-                    found.append(canonical)
-                break
+    for group in (
+        _structured_company_targets(clean_body, subject),
+        _company_alias_hits(clean_body, subject, include_weak=False),
+        _company_alias_hits(clean_body, subject, include_weak=True),
+    ):
+        for canonical in group:
+            if canonical not in seen:
+                seen.add(canonical)
+                found.append(canonical)
+
+    if detect_laubstar_shared_route(clean_body, subject) and LAUBSTAR_SHARED_COMPANY_NAME not in seen:
+        found.insert(0, LAUBSTAR_SHARED_COMPANY_NAME)
 
     return found
 
@@ -880,6 +1053,467 @@ def choose_company_for_attachment(filename: str, companies: List[str], context_t
     return best, best_score
 
 
+def ai_api_key() -> Optional[str]:
+    return (
+        os.environ.get("AUTOPOST_OPENAI_API_KEY", "").strip()
+        or os.environ.get("OPENAI_API_KEY", "").strip()
+        or None
+    )
+
+
+def ai_routing_available() -> bool:
+    return AI_ROUTING_ENABLED and bool(ai_api_key())
+
+
+def safe_attachment_filename(name: str) -> str:
+    basename = os.path.basename(name or "").strip()
+    if not basename:
+        basename = f"attachment-{uuid.uuid4().hex[:8]}"
+    return re.sub(r'[<>:"/\\\\|?*]', "_", basename)
+
+
+def unique_file_path(folder: str, filename: str) -> str:
+    os.makedirs(folder, exist_ok=True)
+    safe_name = safe_attachment_filename(filename)
+    candidate = os.path.join(folder, safe_name)
+    if not os.path.exists(candidate):
+        return candidate
+
+    stem, ext = os.path.splitext(safe_name)
+    for index in range(1, 1000):
+        candidate = os.path.join(folder, f"{stem}-{index}{ext}")
+        if not os.path.exists(candidate):
+            return candidate
+    raise RuntimeError(f"Could not create unique filename for {safe_name}")
+
+
+def build_staging_folder(mail, run_hint: str, create: bool = True) -> str:
+    date_str = mail.ReceivedTime.Format("%Y-%m-%d")
+    year_str = mail.ReceivedTime.Format("%Y")
+    run_id = hashlib.sha1(f"{run_hint}-{date_str}-staging".encode("utf-8", errors="ignore")).hexdigest()[:8]
+    folder = os.path.join(BASE_PATH, year_str, "_routing_staging", date_str, run_id)
+    if create:
+        os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def build_quarantine_folder(mail, run_hint: str, create: bool = True) -> str:
+    date_str = mail.ReceivedTime.Format("%Y-%m-%d")
+    year_str = mail.ReceivedTime.Format("%Y")
+    run_id = hashlib.sha1(f"{run_hint}-{date_str}-quarantine".encode("utf-8", errors="ignore")).hexdigest()[:8]
+    folder = os.path.join(BASE_PATH, year_str, QUARANTINE_FOLDER_NAME, date_str, run_id)
+    if create:
+        os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def media_kind_for_path(path_or_name: str) -> str:
+    ext = os.path.splitext(path_or_name or "")[1].lower()
+    if ext in ROUTABLE_VIDEO_EXTS:
+        return "video"
+    if ext in ROUTABLE_IMAGE_EXTS:
+        return "image"
+    return "file"
+
+
+def _image_file_to_data_url(image_path: str) -> Optional[str]:
+    try:
+        size = os.path.getsize(image_path)
+    except OSError:
+        return None
+
+    source_path = image_path
+    temp_path: Optional[str] = None
+    if size > AI_MAX_IMAGE_BYTES:
+        try:
+            from PIL import Image
+
+            with Image.open(image_path) as image:
+                image.thumbnail((1400, 1400))
+                if image.mode not in ("RGB", "L"):
+                    image = image.convert("RGB")
+                handle = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                temp_path = handle.name
+                handle.close()
+                image.save(temp_path, "JPEG", quality=82, optimize=True)
+                source_path = temp_path
+        except Exception as exc:
+            print(f"[AI ROUTING] Could not resize image for AI ({image_path}): {exc}")
+            return None
+
+    try:
+        with open(source_path, "rb") as fh:
+            encoded = base64.b64encode(fh.read()).decode("ascii")
+        mime_type = mimetypes.guess_type(source_path)[0] or "image/jpeg"
+        return f"data:{mime_type};base64,{encoded}"
+    except Exception as exc:
+        print(f"[AI ROUTING] Could not encode image for AI ({image_path}): {exc}")
+        return None
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+
+def extract_video_thumbnail_for_ai(video_path: str) -> Optional[str]:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+    thumb_path = handle.name
+    handle.close()
+    try:
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-ss",
+                "00:00:01",
+                "-i",
+                video_path,
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=960:-1",
+                thumb_path,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+        )
+        if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
+            return thumb_path
+    except Exception:
+        pass
+
+    try:
+        os.unlink(thumb_path)
+    except OSError:
+        pass
+    return None
+
+
+def media_data_url_for_ai(media_path: Optional[str]) -> Optional[str]:
+    if not media_path or not os.path.exists(media_path):
+        return None
+
+    kind = media_kind_for_path(media_path)
+    if kind == "image":
+        return _image_file_to_data_url(media_path)
+    if kind == "video":
+        thumbnail = extract_video_thumbnail_for_ai(media_path)
+        if not thumbnail:
+            return None
+        try:
+            return _image_file_to_data_url(thumbnail)
+        finally:
+            try:
+                os.unlink(thumbnail)
+            except OSError:
+                pass
+    return None
+
+
+def extract_response_text(payload: Dict[str, Any]) -> str:
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str):
+        return output_text
+
+    for item in payload.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content", []) or []:
+            if isinstance(content, dict) and content.get("type") == "output_text":
+                text = content.get("text")
+                if isinstance(text, str):
+                    return text
+    return ""
+
+
+def normalize_ai_target_company(value: str | None) -> Optional[str]:
+    cleaned = (value or "").strip()
+    if not cleaned or cleaned.upper() in {"QUARANTINE", "NEEDS_REVIEW", "NEEDS REVIEW"}:
+        return None
+
+    allowed = {str(entry["name"]): str(entry["name"]) for entry in _company_catalog()}
+    allowed[LAUBSTAR_SHARED_COMPANY_NAME] = LAUBSTAR_SHARED_COMPANY_NAME
+    normalized_allowed = {_normalize_text(name): canonical for name, canonical in allowed.items()}
+    direct = normalized_allowed.get(_normalize_text(cleaned))
+    if direct:
+        return direct
+
+    hits = _company_alias_hits(cleaned, include_weak=True)
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
+def openai_route_media(
+    *,
+    subject: str,
+    instruction_text: str,
+    filename: str,
+    media_path: Optional[str],
+    detected_companies: List[str],
+) -> Optional[RoutingDecision]:
+    key = ai_api_key()
+    if not key:
+        return None
+
+    catalog = [
+        {"name": str(entry["name"]), "aliases": [str(alias) for alias in entry["aliases"]]}
+        for entry in _company_catalog()
+    ]
+    data_url = media_data_url_for_ai(media_path)
+    media_kind = media_kind_for_path(media_path or filename)
+    prompt = {
+        "subject": subject,
+        "clean_instruction_text": instruction_text,
+        "filename": filename,
+        "media_kind": media_kind,
+        "detected_companies_from_text": detected_companies,
+        "allowed_targets": catalog,
+        "special_rules": [
+            {
+                "target_company": LAUBSTAR_SHARED_COMPANY_NAME,
+                "rule": (
+                    "If the instruction says UD Group, UD Trucks Group, Laubstar Group, or schedule for Laubstar "
+                    "and the media appears to belong to the Lichtenburg, Upington, Klerksdorp, or Kathu branch set, "
+                    f"route to {LAUBSTAR_SHARED_COMPANY_NAME} so the campaign stays in one folder."
+                ),
+            },
+            {
+                "target_company": "QUARANTINE",
+                "rule": "Use QUARANTINE if visual/text evidence conflicts or the exact target page is unclear.",
+            },
+        ],
+    }
+    content: List[Dict[str, Any]] = [
+        {
+            "type": "input_text",
+            "text": (
+                "Route this email attachment to exactly one allowed target company/page. "
+                "Use the clean instruction text, filename, and image/video thumbnail when present. "
+                "Confidence is 0-5. Return QUARANTINE if uncertain."
+                f"\n\nRouting input:\n{json.dumps(prompt, ensure_ascii=False)}"
+            ),
+        }
+    ]
+    if data_url:
+        content.append({"type": "input_image", "image_url": data_url, "detail": "low"})
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "target_company": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 5},
+            "reason": {"type": "string"},
+            "alternatives": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["target_company", "confidence", "reason", "alternatives"],
+    }
+    request_payload = {
+        "model": AI_MODEL,
+        "input": [
+            {
+                "role": "developer",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "You are a conservative social-media asset router. "
+                            "Never invent a company. Pick only from allowed_targets or QUARANTINE. "
+                            "Prefer explicit clean instruction text, then filename, then visual evidence. "
+                            "If multiple companies are plausible and the media does not clearly identify one, lower confidence."
+                        ),
+                    }
+                ],
+            },
+            {"role": "user", "content": content},
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "autopost_media_route",
+                "schema": schema,
+                "strict": True,
+            }
+        },
+    }
+
+    try:
+        req = urllib_request.Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(request_payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib_request.urlopen(req, timeout=AI_TIMEOUT_SECONDS) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except urllib_error.HTTPError as exc:
+        try:
+            error_text = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            error_text = str(exc)
+        print(f"[AI ROUTING] OpenAI routing failed for {filename}: {error_text[:500]}")
+        return None
+    except Exception as exc:
+        print(f"[AI ROUTING] OpenAI routing failed for {filename}: {exc}")
+        return None
+
+    text = extract_response_text(response_payload)
+    try:
+        result = json.loads(text)
+    except Exception:
+        print(f"[AI ROUTING] Could not parse AI routing JSON for {filename}: {text[:500]}")
+        return None
+
+    target = normalize_ai_target_company(result.get("target_company"))
+    confidence = float(result.get("confidence") or 0)
+    alternatives = [str(item) for item in result.get("alternatives", []) if str(item).strip()]
+    return RoutingDecision(
+        target_company=target,
+        confidence=confidence,
+        method="ai",
+        reason=str(result.get("reason") or "AI routing decision."),
+        candidates=detected_companies,
+        alternatives=alternatives,
+        raw_ai=result,
+    )
+
+
+def route_media_file(
+    *,
+    subject: str,
+    instruction_text: str,
+    filename: str,
+    media_path: Optional[str],
+    detected_companies: List[str],
+) -> RoutingDecision:
+    text_targets = list(dict.fromkeys(detected_companies))
+    filename_targets = _company_alias_hits(filename, include_weak=True)
+    candidates = list(dict.fromkeys(text_targets + filename_targets))
+
+    non_laubstar_candidates = [
+        c for c in candidates
+        if c not in LAUBSTAR_SHARED_MEMBERS
+        and c not in {LAUBSTAR_SHARED_COMPANY_NAME, "Laubstar", "FAW Trucks LBS"}
+    ]
+    if detect_laubstar_shared_route(instruction_text, subject) and not non_laubstar_candidates:
+        return RoutingDecision(
+            target_company=LAUBSTAR_SHARED_COMPANY_NAME,
+            confidence=5.0,
+            method="deterministic",
+            reason="Clean instruction text indicates a UD Group/Laubstar shared campaign.",
+            candidates=candidates,
+            alternatives=[],
+        )
+
+    if len(text_targets) == 1 and not filename_targets:
+        return RoutingDecision(
+            target_company=text_targets[0],
+            confidence=5.0,
+            method="deterministic",
+            reason="Only one company/page was detected in the clean instruction text.",
+            candidates=candidates,
+            alternatives=[],
+        )
+
+    if len(text_targets) == 1 and set(filename_targets).issubset(set(text_targets)):
+        return RoutingDecision(
+            target_company=text_targets[0],
+            confidence=5.0,
+            method="deterministic",
+            reason="Clean instruction text and filename point to the same company/page.",
+            candidates=candidates,
+            alternatives=[],
+        )
+
+    if not text_targets and len(filename_targets) == 1:
+        return RoutingDecision(
+            target_company=filename_targets[0],
+            confidence=4.2,
+            method="filename",
+            reason="Filename points to one company/page and no clean text target conflicts.",
+            candidates=candidates,
+            alternatives=[],
+        )
+
+    if len(filename_targets) == 1 and filename_targets[0] in text_targets:
+        return RoutingDecision(
+            target_company=filename_targets[0],
+            confidence=4.6,
+            method="filename",
+            reason="Clean instruction text lists multiple pages, but the filename points to one listed page.",
+            candidates=candidates,
+            alternatives=[candidate for candidate in candidates if candidate != filename_targets[0]],
+        )
+
+    ai_decision = openai_route_media(
+        subject=subject,
+        instruction_text=instruction_text,
+        filename=filename,
+        media_path=media_path,
+        detected_companies=candidates,
+    )
+    if ai_decision:
+        return ai_decision
+
+    if len(candidates) == 1:
+        return RoutingDecision(
+            target_company=candidates[0],
+            confidence=4.1,
+            method="fallback",
+            reason="AI unavailable; one candidate remained after clean text and filename matching.",
+            candidates=candidates,
+            alternatives=[],
+        )
+
+    return RoutingDecision(
+        target_company=None,
+        confidence=0.0,
+        method="quarantine",
+        reason="Routing is ambiguous and AI routing was unavailable or inconclusive.",
+        candidates=candidates,
+        alternatives=candidates,
+    )
+
+
+def write_routing_audit(path: str, decision: RoutingDecision, *, subject: str, instruction_text: str, original_filename: str) -> None:
+    if not ROUTING_AUDIT_ENABLED and not decision.should_quarantine:
+        return
+
+    audit = {
+        "original_filename": original_filename,
+        "saved_path": path,
+        "target_company": decision.target_company,
+        "confidence": decision.confidence,
+        "threshold": AI_CONFIDENCE_THRESHOLD,
+        "method": decision.method,
+        "reason": decision.reason,
+        "candidates": decision.candidates,
+        "alternatives": decision.alternatives,
+        "subject": subject,
+        "clean_instruction_text": instruction_text,
+        "raw_ai": decision.raw_ai,
+        "quarantined": decision.should_quarantine,
+    }
+    audit_path = f"{path}.routing.json"
+    try:
+        with open(audit_path, "w", encoding="utf-8") as fh:
+            json.dump(audit, fh, indent=2, ensure_ascii=False)
+    except Exception as exc:
+        print(f"[AI ROUTING] Could not write routing audit for {path}: {exc}")
+
+
 def open_folder(path: str) -> None:
     """Open a folder in Explorer (best-effort)."""
     if not os.path.isdir(path):
@@ -899,9 +1533,10 @@ def process_mail(entry_id: str, dry_run: bool = False) -> bool:
 
     body = mail.Body or ""
     subject = mail.Subject or ""
-    companies = extract_companies_from_body(body, subject)
+    clean_instruction = extract_clean_instruction_block(body)
+    companies = extract_companies_from_body(clean_instruction, subject)
 
-    if not companies:
+    if not companies and not ai_routing_available():
         print(f"[{entry_id}] No companies detected from body/subject, nothing to do.")
         return False
 
@@ -912,61 +1547,74 @@ def process_mail(entry_id: str, dry_run: bool = False) -> bool:
         print(f"[{entry_id}] No non-inline attachments on this mail.")
         return False
 
-    context_text = f"{subject} {body}"
-
-    print(f"[{entry_id}] Detected companies: {companies}")
+    print(f"[{entry_id}] Detected companies from clean instructions: {companies or '[none]'}")
+    if ai_routing_available():
+        print(f"[{entry_id}] AI media routing is enabled with model {AI_MODEL}.")
+    else:
+        print(f"[{entry_id}] AI media routing unavailable; set OPENAI_API_KEY or AUTOPOST_OPENAI_API_KEY to enable it.")
     if dry_run:
         print(f"[{entry_id}] Dry-run mode: will not save attachments or update Sheets/Outlook.")
 
-    multi_companies = len(companies) > 1 and len(real_attachments) > 1
-
     dest_folders = set()
     company_to_paths: Dict[str, List[str]] = {}
-    attachments_by_company: Dict[str, List] = {}
-    attachment_choices: List[Tuple] = []
-    company_hits: Dict[str, int] = {name: 0 for name in companies}
+    staging_folder = build_staging_folder(mail, entry_id, create=not dry_run)
 
     try:
-        if multi_companies:
-            print(f"[{entry_id}] Multiple companies + attachments, routing by filename...")
-            for att in real_attachments:
-                fname = att.FileName
-                company_name, score = choose_company_for_attachment(fname, companies, context_text=context_text)
-                attachment_choices.append((att, company_name, score))
-                if score > 0:
-                    company_hits[company_name] = company_hits.get(company_name, 0) + 1
-                print(f"  [{entry_id}] {fname} mapped to {company_name} (score={score})")
-            positive_companies = [c for c, hits in company_hits.items() if hits > 0]
-            if len(positive_companies) == 1:
-                forced = positive_companies[0]
-                attachments_by_company[forced] = [att for att, _, _ in attachment_choices]
-                print(f"  [{entry_id}] Only {forced} matched by content; routing all attachments there.")
+        for att in real_attachments:
+            fname = safe_attachment_filename(getattr(att, "FileName", "") or "")
+            if dry_run:
+                staged_path = os.path.join(staging_folder, fname)
+                staged_for_ai = None
             else:
-                for att, company_name, _score in attachment_choices:
-                    attachments_by_company.setdefault(company_name, []).append(att)
-        else:
-            company_name = companies[0]
-            attachments_by_company[company_name] = real_attachments
+                staged_path = unique_file_path(staging_folder, fname)
+                att.SaveAsFile(staged_path)
+                staged_for_ai = staged_path
 
-        for company_name, attachments in attachments_by_company.items():
-            dest = build_dest_folder(mail, company_name, run_hint=entry_id, create=not dry_run)
-            dest_folders.add(dest)
-            for att in attachments:
-                fname = att.FileName
-                save_path = os.path.join(dest, fname)
-                if dry_run:
-                    print(f"  [{entry_id}] (dry-run) {fname} -> {company_name} => {save_path}")
-                    company_to_paths.setdefault(company_name, []).append(save_path)
-                    continue
-                try:
-                    att.SaveAsFile(save_path)
-                    print(f"  [{entry_id}] {fname} -> {company_name} => {save_path}")
-                    company_to_paths.setdefault(company_name, []).append(save_path)
-                except Exception as exc:
-                    print(f"[{entry_id}] Failed to save {fname} to {save_path}: {exc}")
+            decision = route_media_file(
+                subject=subject,
+                instruction_text=clean_instruction,
+                filename=fname,
+                media_path=staged_for_ai,
+                detected_companies=companies,
+            )
+
+            if decision.should_quarantine:
+                dest_folder = build_quarantine_folder(mail, entry_id, create=not dry_run)
+                dest_label = QUARANTINE_FOLDER_NAME
+            else:
+                dest_folder = build_dest_folder(mail, decision.target_company or QUARANTINE_FOLDER_NAME, run_hint=entry_id, create=not dry_run)
+                dest_label = decision.target_company or QUARANTINE_FOLDER_NAME
+
+            dest_folders.add(dest_folder)
+            save_path = unique_file_path(dest_folder, fname) if not dry_run else os.path.join(dest_folder, fname)
+            if dry_run:
+                print(
+                    f"  [{entry_id}] (dry-run) {fname} -> {dest_label} "
+                    f"(confidence={decision.confidence:.1f}, method={decision.method}) => {save_path}"
+                )
+                if not decision.should_quarantine:
+                    company_to_paths.setdefault(dest_label, []).append(save_path)
+                continue
+
+            shutil.move(staged_path, save_path)
+            write_routing_audit(save_path, decision, subject=subject, instruction_text=clean_instruction, original_filename=fname)
+            print(
+                f"  [{entry_id}] {fname} -> {dest_label} "
+                f"(confidence={decision.confidence:.1f}, method={decision.method}) => {save_path}"
+            )
+            if decision.should_quarantine:
+                print(f"    [{entry_id}] Quarantined: {decision.reason}")
+            else:
+                company_to_paths.setdefault(dest_label, []).append(save_path)
     except Exception as exc:
         print(f"[{entry_id}] Failed to save attachments: {exc}")
         return False
+    finally:
+        if not dry_run:
+            try:
+                os.rmdir(staging_folder)
+            except OSError:
+                pass
 
     if not dry_run:
         try:
@@ -1002,25 +1650,25 @@ def process_mail(entry_id: str, dry_run: bool = False) -> bool:
     return True
 
 
-def process_baie_dankie_acknowledgements(Reviewer_folder=None, dry_run: bool = False):
+def process_baie_dankie_acknowledgements(clarise_folder=None, dry_run: bool = False):
     """
-    Scan Reviewer folder for unread 'Baie Dankie' acknowledgements and complete them.
+    Scan Clarise folder for unread 'Baie Dankie' acknowledgements and complete them.
     """
-    target_folder = Reviewer_folder
+    target_folder = clarise_folder
     if target_folder is None:
         try:
             outlook = win32com.client.Dispatch("Outlook.Application")
             ns = outlook.GetNamespace("MAPI")
             inbox = ns.GetDefaultFolder(6)
-            target_folder = inbox.Folders(Reviewer_FOLDER_NAME)
+            target_folder = inbox.Folders(CLARISE_FOLDER_NAME)
         except Exception as exc:
-            print(f"[BAIE] Could not access {Reviewer_FOLDER_NAME} folder: {exc}")
+            print(f"[BAIE] Could not access {CLARISE_FOLDER_NAME} folder: {exc}")
             return
 
     try:
         items = target_folder.Items
     except Exception as exc:
-        print(f"[BAIE] Could not read items in {Reviewer_FOLDER_NAME}: {exc}")
+        print(f"[BAIE] Could not read items in {CLARISE_FOLDER_NAME}: {exc}")
         return
 
     processed = 0
@@ -1030,7 +1678,7 @@ def process_baie_dankie_acknowledgements(Reviewer_folder=None, dry_run: bool = F
             if item.Class != 43 or not item.UnRead:
                 continue
             sender = (getattr(item, "SenderEmailAddress", "") or "").lower()
-            if sender != Reviewer_SENDER_EMAIL:
+            if sender != CLARISE_SENDER_EMAIL:
                 continue
             body = item.Body or ""
         except Exception:
@@ -1058,31 +1706,31 @@ def process_baie_dankie_acknowledgements(Reviewer_folder=None, dry_run: bool = F
         print(f"[INFO] Cleared {processed} 'Baie Dankie' acknowledgement(s).")
 
 
-def process_unread_Reviewer_folder(dry_run: bool = False):
-    """Fallback mode: scan Reviewer folder for unread mails from Reviewer and process each."""
+def process_unread_clarise_folder(dry_run: bool = False):
+    """Fallback mode: scan Clarise folder for unread mails from Clarise and process each."""
     outlook = win32com.client.Dispatch("Outlook.Application")
     ns = outlook.GetNamespace("MAPI")
     inbox = ns.GetDefaultFolder(6)  # olFolderInbox
-    Reviewer_folder = inbox.Folders(Reviewer_FOLDER_NAME)  # folder name must match
+    clarise_folder = inbox.Folders(CLARISE_FOLDER_NAME)  # folder name must match
 
     entry_ids = []
 
-    for item in Reviewer_folder.Items:
+    for item in clarise_folder.Items:
         if item.Class == 43:  # olMailItem
-            if item.UnRead and item.SenderEmailAddress.lower() == Reviewer_SENDER_EMAIL:
+            if item.UnRead and item.SenderEmailAddress.lower() == CLARISE_SENDER_EMAIL:
                 entry_ids.append(item.EntryID)
 
     if not entry_ids:
-        print("[INFO] No unread emails from Reviewer in Reviewer folder.")
-        process_baie_dankie_acknowledgements(Reviewer_folder, dry_run=dry_run)
+        print("[INFO] No unread emails from Clarise in Clarise folder.")
+        process_baie_dankie_acknowledgements(clarise_folder, dry_run=dry_run)
         return
 
-    print(f"[INFO] Found {len(entry_ids)} unread Reviewer emails. Processing...")
+    print(f"[INFO] Found {len(entry_ids)} unread Clarise emails. Processing...")
     for eid in entry_ids:
         print(f"\n--- Processing {eid} ---")
         process_mail(eid, dry_run=dry_run)
 
-    process_baie_dankie_acknowledgements(Reviewer_folder, dry_run=dry_run)
+    process_baie_dankie_acknowledgements(clarise_folder, dry_run=dry_run)
 
 
 def print_startup_diagnostics() -> None:
@@ -1090,6 +1738,8 @@ def print_startup_diagnostics() -> None:
         print(f"[CONFIG] Sheets service account file is missing: {SERVICE_ACCOUNT_FILE}")
     print(f"[CONFIG] ACTIVE_COMPANY_ONLY = {ACTIVE_COMPANY_ONLY}")
     print(f"[CONFIG] AUTOPOST_BASE_PATH = {BASE_PATH}")
+    print(f"[CONFIG] AI routing = {'enabled' if ai_routing_available() else 'disabled'} ({AI_MODEL})")
+    print(f"[CONFIG] Quarantine folder = {QUARANTINE_FOLDER_NAME}, threshold = {AI_CONFIDENCE_THRESHOLD}")
 
 
 def main():
@@ -1104,9 +1754,9 @@ def main():
         else:
             entry_ids.append(arg)
 
-    # If no EntryIDs provided: scan Reviewer folder for unread mails
+    # If no EntryIDs provided: scan Clarise folder for unread mails
     if not entry_ids:
-        process_unread_Reviewer_folder(dry_run=dry_run)
+        process_unread_clarise_folder(dry_run=dry_run)
         return
 
     successes = 0
@@ -1121,4 +1771,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
