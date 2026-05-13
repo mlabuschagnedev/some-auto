@@ -142,6 +142,46 @@ def ensure_primary_developer_user(payload: dict[str, Any]) -> bool:
     return True
 
 
+def ensure_temporary_admin_user(payload: dict[str, Any]) -> bool:
+    users = payload.setdefault("users", [])
+    if not isinstance(users, list):
+        raise RuntimeError("User store must contain a 'users' array.")
+
+    target_username = "admin"
+    for record in users:
+        if not isinstance(record, dict):
+            continue
+        if normalize_username(record.get("username")) != target_username:
+            continue
+
+        changed = False
+        if str(record.get("role") or "").strip().lower() != "admin":
+            record["role"] = "admin"
+            changed = True
+        if not bool(record.get("is_active", True)):
+            record["is_active"] = True
+            changed = True
+        if not str(record.get("display_name") or "").strip():
+            record["display_name"] = "Admin"
+            changed = True
+        if not str(record.get("password_hash") or "").strip():
+            record["password_hash"] = generate_password_hash("admin123")
+            changed = True
+        return changed
+
+    users.append(
+        {
+            "username": target_username,
+            "display_name": "Admin",
+            "email": None,
+            "role": "admin",
+            "is_active": True,
+            "password_hash": generate_password_hash("admin123"),
+        }
+    )
+    return True
+
+
 def ensure_user_store_file() -> None:
     USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
     if USERS_FILE.exists():
@@ -160,7 +200,9 @@ def load_user_store() -> dict[str, Any]:
     users = payload.get("users")
     if not isinstance(users, list):
         raise RuntimeError("User store must contain a 'users' array.")
-    if ensure_primary_developer_user(payload):
+    changed = ensure_primary_developer_user(payload)
+    changed = ensure_temporary_admin_user(payload) or changed
+    if changed:
         save_user_store(payload)
     return payload
 

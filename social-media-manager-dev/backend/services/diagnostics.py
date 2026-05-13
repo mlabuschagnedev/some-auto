@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from ..auth import require_roles
 from ..integrations import get_integration_check_payload
@@ -18,7 +18,7 @@ def health() -> Any:
     return jsonify(
         {
             "status": "healthy",
-            "app": "Sample SoMe-Auto",
+            "app": "MSS SoME-Auto",
             "timestamp": utcnow().isoformat(),
             "timezone": APP_TIMEZONE_NAME,
         }
@@ -97,4 +97,3 @@ def integration_check() -> Any:
 def integration_check_for_page(page_id: int) -> Any:
     Page.query.get_or_404(page_id)
     return jsonify(get_integration_check_payload(page_id=page_id))
-

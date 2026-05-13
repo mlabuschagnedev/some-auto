@@ -1,8 +1,8 @@
-﻿# Sample SoMe-Auto System Overview
+# MSS SoME-Auto System Overview
 
 ## 1. What This System Is
 
-Sample SoMe-Auto is a planner-first social media management platform built for a company or agency that needs to organize content production, track creative readiness, schedule posts, publish to connected social platforms, and preserve a useful record of past work.
+MSS SoME-Auto is a planner-first social media management platform built for a company or agency that needs to organize content production, track creative readiness, schedule posts, publish to connected social platforms, and preserve a useful record of past work.
 
 The system is not designed as a lightweight "type a caption and post it now" utility. Its real purpose is to become the operational control layer between:
 
@@ -74,7 +74,7 @@ Without a system like this, most businesses run social media through fragmented 
 - managers have poor visibility
 - old content gets lost
 
-Sample SoMe-Auto fixes that by turning social media delivery into a structured workflow with clear states, automation, alerts, and retained history.
+MSS SoME-Auto fixes that by turning social media delivery into a structured workflow with clear states, automation, alerts, and retained history.
 
 ## 5. High-Level Architecture
 
@@ -90,7 +90,7 @@ The frontend is a browser application built with plain HTML, CSS, and JavaScript
 
 ### 5.3 Database
 
-The default database is SQLite through SQLAlchemy. This is appropriate for a locally run internal business tool and keeps setup simple while still supporting structured relational data.
+The default database is PostgreSQL through SQLAlchemy. This keeps the production deployment on a server-grade relational store while preserving the ORM boundary already used by the backend.
 
 ### 5.4 Background scheduler
 
@@ -114,7 +114,7 @@ For local development and deployment without public hosting, the app can use a C
 
 - Flask backend API
 - SQLAlchemy ORM
-- SQLite by default
+- PostgreSQL by default
 - JWT access and refresh tokens
 - APScheduler for recurring jobs
 - Pillow for image inspection and image-cropping support
@@ -221,7 +221,7 @@ The system currently uses three main roles:
 
 ### 8.3 Owner account
 
-The owner account is a protected top-level account intended for Example User. It has developer-level reach and is protected from deletion by other users. Certain sensitive flows, especially the current LinkedIn manual-assist path, are restricted to the owner.
+The owner account is a protected top-level account intended for Marcel. It has developer-level reach and is protected from deletion by other users. Certain sensitive flows, especially the current LinkedIn manual-assist path, are restricted to the owner.
 
 ### 8.4 Why this matters operationally
 
@@ -350,7 +350,7 @@ The app currently sends warnings for:
 
 The warning system distinguishes between:
 
-- admin or Reviewer-style operational warnings
+- admin or Clarise-style operational warnings
 - designer-targeted creative warnings
 
 That means the app does not just detect risk. It directs the warning toward the people responsible for acting on it.
@@ -576,7 +576,7 @@ A strong system overview should also be honest about current boundaries.
 
 - LinkedIn is in manual-assist mode, not full API automation
 - full platform confidence on every network depends on credential readiness and live validation
-- the system currently uses SQLite by default, which is fine for local/internal operation but not the same as a heavier multi-server deployment model
+- the system expects PostgreSQL for normal operation; SQLite is now only an explicit isolated-test option
 - the product is intentionally monolithic, which is a strength for simplicity, but it also means the app process owns API work, scheduling, and UI serving together
 
 These are not necessarily weaknesses. In the current business context they are mostly pragmatic tradeoffs.
@@ -597,7 +597,7 @@ That combination is what gives it real business value.
 
 ## 24. Final Summary
 
-Sample SoMe-Auto is designed to make social media execution structured, reliable, and scalable.
+MSS SoME-Auto is designed to make social media execution structured, reliable, and scalable.
 
 Its biggest value is not that it can post to social platforms. Many tools can do that.
 
@@ -613,4 +613,3 @@ Its biggest value is that it creates an internal operating system for social med
 - the company becomes less dependent on chaos, memory, and informal communication
 
 That is why this system can materially improve a company. It turns social media from a reactive task into a managed operational process.
-

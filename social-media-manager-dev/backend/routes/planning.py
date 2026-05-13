@@ -47,6 +47,11 @@ def upload_planning_creative(row_id: int) -> Any:
 def schedule_from_planning_row(row_id: int) -> Any:
     return service.schedule_from_planning_row(row_id)
 
+@bp.route("/api/planning/rows/<int:row_id>/publish", methods=["POST"])
+@jwt_required()
+def publish_from_planning_row(row_id: int) -> Any:
+    return service.publish_from_planning_row(row_id)
+
 @bp.route("/api/planning/import-csvs", methods=["POST"])
 @jwt_required()
 @require_roles("developer", "admin")

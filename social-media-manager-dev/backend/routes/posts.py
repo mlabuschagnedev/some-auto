@@ -45,3 +45,15 @@ def delete_post(post_id: int) -> Any:
 @require_roles("developer", "admin")
 def publish_now(post_id: int) -> Any:
     return service.publish_now(post_id)
+
+@bp.route("/api/posts/<int:post_id>/retry", methods=["POST"])
+@jwt_required()
+@require_roles("developer", "admin")
+def retry_post(post_id: int) -> Any:
+    return service.retry_post(post_id)
+
+@bp.route("/api/posts/<int:post_id>/reschedule", methods=["POST"])
+@jwt_required()
+@require_roles("developer", "admin")
+def reschedule_post(post_id: int) -> Any:
+    return service.reschedule_post(post_id)

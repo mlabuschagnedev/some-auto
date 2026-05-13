@@ -4,7 +4,9 @@ from ..auth import current_user, require_owner, require_roles
 from ..models import Page, Post, db
 from ..publishing import (
     apply_platform_result,
+    cancel_pending_facebook_remote_schedule,
     detach_planning_row_from_post,
+    execute_post,
     post_requires_manual_linkedin,
     refresh_post_after_linkedin_manual_update,
     sync_planning_row_post_color,
@@ -19,6 +21,7 @@ from ..routes.common import (
     json,
     jsonify,
     jwt_required,
+    parse_iso_datetime,
     request,
     utcnow,
 )
@@ -100,6 +103,8 @@ def delete_post(post_id: int) -> Any:
     post = Post.query.get_or_404(post_id)
     if post.status in {"posting", "manual_pending"}:
         return jsonify({"error": "Posts currently publishing or waiting on LinkedIn manual completion cannot be deleted."}), 400
+    if post.status in {"scheduled", "draft"}:
+        cancel_pending_facebook_remote_schedule(post)
     media_refs = set(post.media_list())
     detach_planning_row_from_post(post)
     db.session.delete(post)
@@ -117,3 +122,44 @@ def publish_now(post_id: int) -> Any:
         ),
         410,
     )
+
+def retry_post(post_id: int) -> Any:
+    post = Post.query.get_or_404(post_id)
+    if post.status != "failed":
+        return jsonify({"error": "Only failed posts can be retried."}), 400
+
+    post.status = "posting"
+    post.error_message = None
+    post.facebook_remote_last_error = None
+    post.facebook_remote_state = None
+    db.session.commit()
+    results = execute_post(post.id)
+    db.session.refresh(post)
+    return jsonify({"message": "Retry finished.", "post": post.to_dict(), "results": results})
+
+def reschedule_post(post_id: int) -> Any:
+    post = Post.query.get_or_404(post_id)
+    if post.status in {"posting", "manual_pending"}:
+        return jsonify({"error": "Posts currently publishing or waiting on manual completion cannot be rescheduled."}), 400
+
+    data = get_json_body()
+    scheduled_raw = str(data.get("scheduled_time") or "").strip()
+    if not scheduled_raw:
+        return jsonify({"error": "scheduled_time is required."}), 400
+
+    try:
+        scheduled_time = parse_iso_datetime(scheduled_raw)
+    except Exception:
+        scheduled_time = None
+    if scheduled_time is None:
+        return jsonify({"error": "Invalid scheduled_time."}), 400
+
+    if post.facebook_remote_post_id:
+        cancel_pending_facebook_remote_schedule(post)
+    post.scheduled_time = scheduled_time
+    post.status = "scheduled"
+    post.posted_at = None
+    post.error_message = None
+    sync_planning_row_post_color(post)
+    db.session.commit()
+    return jsonify({"message": "Post rescheduled.", "post": post.to_dict()})

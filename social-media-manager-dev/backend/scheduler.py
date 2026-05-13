@@ -16,6 +16,7 @@ logger = core.logger
 scheduler = core.scheduler
 timedelta = core.timedelta
 utcnow = core.utcnow
+_startup_insights_refresh_done = False
 
 def auto_schedule_due_planning_rows(now: datetime) -> None:
     window_end = now + timedelta(minutes=PLANNING_AUTO_SCHEDULE_LEAD_MINUTES)
@@ -60,6 +61,8 @@ def process_due_posts() -> None:
         now = utcnow()
         send_due_planning_warning_emails(now)
         auto_schedule_due_planning_rows(now)
+        handoff_pending_facebook_remote_posts(now)
+        sync_facebook_remote_posts()
         due_posts = (
             Post.query.filter(Post.status == "scheduled", Post.scheduled_time <= now)
             .order_by(Post.scheduled_time.asc())
@@ -118,6 +121,19 @@ def prune_storage_job() -> None:
     with app.app_context():
         prune_orphaned_upload_files()
 
+def refresh_social_insights_job() -> None:
+    global _startup_insights_refresh_done
+    with app.app_context():
+        from .services.analytics import refresh_all_social_insights
+
+        try:
+            force_startup_refresh = not _startup_insights_refresh_done
+            result = refresh_all_social_insights(force=force_startup_refresh, paced=True)
+            _startup_insights_refresh_done = True
+            logger.info("Social insights refresh finished: %s", result)
+        except Exception as error:
+            logger.exception("Social insights refresh failed unexpectedly: %s", error)
+
 def start_scheduler() -> None:
     if scheduler.running:
         return
@@ -144,6 +160,15 @@ def start_scheduler() -> None:
         id="prune_storage_job",
         replace_existing=True,
         max_instances=1,
+    )
+    scheduler.add_job(
+        func=refresh_social_insights_job,
+        trigger="interval",
+        seconds=core.SOCIAL_INSIGHTS_REFRESH_INTERVAL_SECONDS,
+        id="refresh_social_insights",
+        replace_existing=True,
+        max_instances=1,
+        next_run_time=utcnow(),
     )
     scheduler.start()
     logger.info("Scheduler started. Timezone=%s", APP_TIMEZONE_NAME)

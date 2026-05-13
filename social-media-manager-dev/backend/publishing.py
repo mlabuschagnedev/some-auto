@@ -1,8 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from . import app as core
 from .media import *
-from .models import AppSetting, Page, PlanningRow, Post, SocialAccount, db
+from .models import AppSetting, Page, PlanningRow, PlatformPostReference, Post, SocialAccount, db
 from .settings import *
 
 Any = core.Any
@@ -11,6 +11,7 @@ APP_TIMEZONE = core.APP_TIMEZONE
 Callable = core.Callable
 FACEBOOK_APP_ID_SETTING_KEY = core.FACEBOOK_APP_ID_SETTING_KEY
 FACEBOOK_APP_SECRET_SETTING_KEY = core.FACEBOOK_APP_SECRET_SETTING_KEY
+FACEBOOK_NATIVE_SCHEDULE_BUFFER_MINUTES = core.FACEBOOK_NATIVE_SCHEDULE_BUFFER_MINUTES
 LINKEDIN_ALLOWED_ORG_POST_ROLES = core.LINKEDIN_ALLOWED_ORG_POST_ROLES
 META_GLOBAL_ASSUMED_LIFETIME_DAYS = core.META_GLOBAL_ASSUMED_LIFETIME_DAYS
 META_GLOBAL_EXPIRY_ASSUMED_KEY = core.META_GLOBAL_EXPIRY_ASSUMED_KEY
@@ -29,7 +30,9 @@ app = core.app
 cached_meta_user_token = lambda: core.META_USER_TOKEN_CACHE.get('meta')
 datetime = core.datetime
 has_app_context = core.has_app_context
+joinedload = core.joinedload
 json = core.json
+local_datetime_to_unix_timestamp = core.local_datetime_to_unix_timestamp
 logger = core.logger
 mimetypes = core.mimetypes
 os = core.os
@@ -383,6 +386,22 @@ def should_use_live_posting(page_id: int | None = None) -> bool:
     return str(value).lower() == "true"
 
 
+def get_active_page_account(page: Page, platform: str) -> SocialAccount | None:
+    for account in page.social_accounts:
+        if account.platform == platform and account.is_active:
+            return account
+    return None
+
+
+def facebook_native_schedule_deadline(now: datetime | None = None) -> datetime:
+    base = now or utcnow()
+    return base + timedelta(minutes=FACEBOOK_NATIVE_SCHEDULE_BUFFER_MINUTES)
+
+
+def page_requires_facebook_native_scheduling(page: Page) -> bool:
+    return bool(page and should_use_live_posting(page.id) and get_active_page_account(page, "facebook"))
+
+
 def simulate_platform_post(account: SocialAccount, post: Post, media_paths: list[str]) -> dict[str, Any]:
     fake_id = f"{account.platform}_{uuid.uuid4().hex[:18]}"
     logger.info(
@@ -398,6 +417,19 @@ def simulate_platform_post(account: SocialAccount, post: Post, media_paths: list
         "post_id": fake_id,
         "post_url": None,
         "simulated": True,
+    }
+
+
+def scheduled_facebook_remote_result(post: Post) -> dict[str, Any]:
+    post_id = post.facebook_post_id or post.facebook_remote_post_id
+    return {
+        "success": True,
+        "platform": "facebook",
+        "post_id": post_id,
+        "post_url": post.platform_url_map().get("facebook"),
+        "handed_off": True,
+        "skip_apply_platform_result": True,
+        "message": "Facebook post was scheduled natively on Meta and will not be published again locally.",
     }
 
 
@@ -447,6 +479,311 @@ def upload_facebook_attached_media(
     if not media_id:
         raise RuntimeError("Facebook attached media upload returned no id.")
     return str(media_id)
+
+
+def facebook_attached_media_fields(media_ids: list[str]) -> dict[str, str]:
+    return {
+        f"attached_media[{index}]": json.dumps({"media_fbid": media_id})
+        for index, media_id in enumerate(media_ids)
+    }
+
+
+def record_facebook_remote_schedule(post: Post, remote_post_id: str) -> None:
+    post.facebook_remote_post_id = remote_post_id
+    post.facebook_remote_state = "scheduled"
+    post.facebook_remote_scheduled_time = post.scheduled_time
+    post.facebook_remote_last_error = None
+    post.facebook_remote_synced_at = utcnow()
+
+
+def clear_facebook_remote_schedule(post: Post) -> None:
+    post.facebook_remote_post_id = None
+    post.facebook_remote_state = None
+    post.facebook_remote_scheduled_time = None
+    post.facebook_remote_last_error = None
+    post.facebook_remote_synced_at = utcnow()
+
+
+def schedule_facebook_feed_post(
+    account: SocialAccount,
+    target_id: str,
+    content: str,
+    *,
+    scheduled_time: datetime,
+    attached_media_ids: list[str] | None = None,
+) -> str:
+    payload: dict[str, Any] = {
+        "message": content,
+        "access_token": account.access_token,
+        "published": "false",
+        "unpublished_content_type": "SCHEDULED",
+        "scheduled_publish_time": str(local_datetime_to_unix_timestamp(scheduled_time)),
+    }
+    if attached_media_ids:
+        payload.update(facebook_attached_media_fields(attached_media_ids))
+
+    response = requests.post(
+        f"https://graph.facebook.com/v19.0/{target_id}/feed",
+        data=payload,
+        timeout=API_TIMEOUT_SECONDS,
+    )
+    response_payload = ensure_success(response, "Facebook")
+    post_id = response_payload.get("id")
+    if not post_id:
+        raise RuntimeError("Facebook scheduled feed post returned no id.")
+    return str(post_id)
+
+
+def schedule_facebook_video_post(
+    account: SocialAccount,
+    target_id: str,
+    media_file_path: str,
+    *,
+    content: str,
+    scheduled_time: datetime,
+) -> str:
+    media_path = Path(media_file_path)
+    if not media_path.exists():
+        raise RuntimeError(f"Media file not found: {media_path}")
+
+    with media_path.open("rb") as media_file:
+        response = requests.post(
+            f"https://graph.facebook.com/v19.0/{target_id}/videos",
+            data={
+                "description": content,
+                "published": "false",
+                "scheduled_publish_time": str(local_datetime_to_unix_timestamp(scheduled_time)),
+                "access_token": account.access_token,
+            },
+            files={"source": media_file},
+            timeout=API_TIMEOUT_SECONDS,
+        )
+    response_payload = ensure_success(response, "Facebook")
+    post_id = response_payload.get("id")
+    if not post_id:
+        raise RuntimeError("Facebook scheduled video upload returned no id.")
+    return str(post_id)
+
+
+def schedule_facebook_remote_post(account: SocialAccount, post: Post, media_paths: list[str]) -> str:
+    if not account.access_token:
+        raise RuntimeError("Missing Facebook access_token")
+    if not account.page_id_external:
+        raise RuntimeError("Facebook page_id_external is required for native scheduling.")
+    if not post.scheduled_time:
+        raise RuntimeError("Facebook native scheduling requires a scheduled_time.")
+
+    target_id = account.page_id_external
+    content = post.content or ""
+    resolved_media = [str(Path(path)) for path in media_paths]
+    video_count = sum(1 for item in resolved_media if is_video_path(item))
+
+    if video_count > 1:
+        raise RuntimeError("Facebook native scheduling supports only one video per post.")
+    if video_count and len(resolved_media) > 1:
+        raise RuntimeError("Facebook native scheduling does not support mixing a video with other media in this build.")
+
+    if not resolved_media:
+        return schedule_facebook_feed_post(account, target_id, content, scheduled_time=post.scheduled_time)
+
+    if video_count == 1:
+        return schedule_facebook_video_post(
+            account,
+            target_id,
+            resolved_media[0],
+            content=content,
+            scheduled_time=post.scheduled_time,
+        )
+
+    attached_media_ids = [upload_facebook_attached_media(account, target_id, media) for media in resolved_media]
+    return schedule_facebook_feed_post(
+        account,
+        target_id,
+        content,
+        scheduled_time=post.scheduled_time,
+        attached_media_ids=attached_media_ids,
+    )
+
+
+def delete_facebook_remote_post(account: SocialAccount, remote_post_id: str) -> None:
+    response = requests.delete(
+        f"https://graph.facebook.com/v19.0/{remote_post_id}",
+        data={"access_token": account.access_token},
+        timeout=API_TIMEOUT_SECONDS,
+    )
+    if response.ok:
+        return
+
+    error_text = extract_response_error(response)
+    if '"code": 100' in error_text or '"error_subcode": 33' in error_text or "does not exist" in error_text.lower():
+        logger.info("Facebook remote post %s was already unavailable during delete.", remote_post_id)
+        return
+    raise RuntimeError(f"Facebook API error ({response.status_code}): {error_text}")
+
+
+def fetch_facebook_remote_post_state(account: SocialAccount, remote_post_id: str) -> dict[str, Any]:
+    response = requests.get(
+        f"https://graph.facebook.com/v19.0/{remote_post_id}",
+        params={
+            "fields": "id,is_published,scheduled_publish_time,permalink_url,status_type,created_time",
+            "access_token": account.access_token,
+        },
+        timeout=API_TIMEOUT_SECONDS,
+    )
+    return ensure_success(response, "Facebook")
+
+
+def update_facebook_remote_post_record(post: Post, payload: dict[str, Any]) -> None:
+    post.facebook_remote_synced_at = utcnow()
+    post.facebook_remote_last_error = None
+
+    scheduled_raw = payload.get("scheduled_publish_time")
+    if scheduled_raw is not None:
+        try:
+            post.facebook_remote_scheduled_time = datetime.fromtimestamp(int(scheduled_raw), tz=APP_TIMEZONE).replace(tzinfo=None)
+        except (TypeError, ValueError, OSError):
+            parsed = parse_iso_datetime(str(scheduled_raw))
+            if parsed is not None:
+                post.facebook_remote_scheduled_time = parsed
+
+    if payload.get("is_published"):
+        post.facebook_remote_state = "published"
+        post.facebook_post_id = post.facebook_post_id or post.facebook_remote_post_id
+        apply_platform_result(post, "facebook", post.facebook_post_id, payload.get("permalink_url"))
+    else:
+        post.facebook_remote_state = "scheduled"
+
+
+def cancel_pending_facebook_remote_schedule(post: Post) -> None:
+    if not post.facebook_remote_post_id or post.facebook_remote_state == "published":
+        return
+
+    page = post.page or Page.query.options(joinedload(Page.social_accounts)).get(post.page_id)
+    if not page:
+        raise RuntimeError("Cannot cancel Facebook scheduled post because the page no longer exists.")
+    account = get_active_page_account(page, "facebook")
+    if not account:
+        raise RuntimeError("Cannot cancel Facebook scheduled post because no active Facebook account is connected.")
+
+    delete_facebook_remote_post(account, post.facebook_remote_post_id)
+    clear_facebook_remote_schedule(post)
+
+
+def sync_facebook_remote_posts() -> None:
+    posts = (
+        Post.query.options(joinedload(Post.page).joinedload(Page.social_accounts))
+        .filter(Post.facebook_remote_post_id.isnot(None))
+        .all()
+    )
+    changed = False
+
+    for post in posts:
+        if not post.page or post.facebook_remote_state == "published":
+            continue
+
+        account = get_active_page_account(post.page, "facebook")
+        if not account or not account.access_token:
+            continue
+
+        try:
+            payload = fetch_facebook_remote_post_state(account, post.facebook_remote_post_id)
+        except Exception as error:
+            post.facebook_remote_state = "sync_error"
+            post.facebook_remote_last_error = str(error)
+            post.facebook_remote_synced_at = utcnow()
+            changed = True
+            continue
+
+        update_facebook_remote_post_record(post, payload)
+        changed = True
+
+    if changed:
+        db.session.commit()
+
+
+def handoff_pending_facebook_remote_posts(now: datetime | None = None) -> None:
+    current_time = now or utcnow()
+    deadline = facebook_native_schedule_deadline(current_time)
+    posts = (
+        Post.query.options(joinedload(Post.page).joinedload(Page.social_accounts))
+        .filter(Post.status == "scheduled")
+        .filter(Post.facebook_remote_post_id.is_(None))
+        .filter(Post.scheduled_time.isnot(None))
+        .all()
+    )
+    changed = False
+
+    for post in posts:
+        if not post.page:
+            continue
+        if "facebook" not in post.platform_list():
+            continue
+        if not should_use_live_posting(post.page.id):
+            continue
+
+        account = get_active_page_account(post.page, "facebook")
+        if not account or not account.access_token:
+            continue
+
+        if post.scheduled_time and post.scheduled_time < deadline:
+            error_message = (
+                "Facebook native scheduling requires at least "
+                f"{FACEBOOK_NATIVE_SCHEDULE_BUFFER_MINUTES} minutes of lead time. "
+                "Reschedule this post."
+            )
+            if post.facebook_remote_state != "sync_error" or post.facebook_remote_last_error != error_message:
+                post.facebook_remote_state = "sync_error"
+                post.facebook_remote_last_error = error_message
+                post.facebook_remote_synced_at = utcnow()
+                changed = True
+            continue
+
+        try:
+            resolved_media = [str(resolve_upload_path(item)) for item in post.media_list()]
+            remote_post_id = schedule_facebook_remote_post(account, post, resolved_media)
+        except Exception as error:
+            post.facebook_remote_state = "sync_error"
+            post.facebook_remote_last_error = str(error)
+            post.facebook_remote_synced_at = utcnow()
+            changed = True
+            logger.warning("Facebook remote handoff failed for scheduled post %s: %s", post.id, error)
+            continue
+
+        record_facebook_remote_schedule(post, remote_post_id)
+        changed = True
+        logger.info("Handed scheduled post %s off to Meta as Facebook remote post %s.", post.id, remote_post_id)
+
+    if changed:
+        db.session.commit()
+
+
+def publish_facebook_feed_post(
+    account: SocialAccount,
+    target_id: str,
+    message: str,
+    attached_media_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    data = {
+        "message": message,
+        "published": "true",
+        "access_token": account.access_token,
+    }
+    if attached_media_ids:
+        data.update(facebook_attached_media_fields(attached_media_ids))
+
+    response = requests.post(
+        f"https://graph.facebook.com/v19.0/{target_id}/feed",
+        data=data,
+        timeout=API_TIMEOUT_SECONDS,
+    )
+    payload = ensure_success(response, "Facebook")
+    post_id = payload.get("id")
+    return {
+        "success": True,
+        "platform": "facebook",
+        "post_id": post_id,
+        "post_url": build_platform_post_url(account, "facebook", post_id),
+    }
 
 
 def instagram_container_status(account: SocialAccount, container_id: str) -> str | None:
@@ -635,14 +972,7 @@ def post_to_facebook_live(account: SocialAccount, post: Post, media_paths: list[
     content = post.content or ""
 
     if not media_paths:
-        response = requests.post(
-            f"{base_url}/{target_id}/feed",
-            data={"message": content, "access_token": account.access_token},
-            timeout=API_TIMEOUT_SECONDS,
-        )
-        payload = ensure_success(response, "Facebook")
-        post_id = payload.get("id")
-        return {"success": True, "platform": "facebook", "post_id": post_id, "post_url": build_platform_post_url(account, "facebook", post_id)}
+        return publish_facebook_feed_post(account, target_id, content)
 
     if len(media_paths) == 1:
         media_path = Path(media_paths[0])
@@ -657,35 +987,24 @@ def post_to_facebook_live(account: SocialAccount, post: Post, media_paths: list[
                     files={"source": media_file},
                     timeout=API_TIMEOUT_SECONDS,
                 )
-        else:
-            with media_path.open("rb") as media_file:
-                response = requests.post(
-                    f"{base_url}/{target_id}/photos",
-                    data={"message": content, "access_token": account.access_token},
-                    files={"source": media_file},
-                    timeout=API_TIMEOUT_SECONDS,
-                )
+            payload = ensure_success(response, "Facebook")
+            post_id = payload.get("id")
+            return {"success": True, "platform": "facebook", "post_id": post_id, "post_url": build_platform_post_url(account, "facebook", post_id)}
 
-        payload = ensure_success(response, "Facebook")
-        post_id = payload.get("id")
-        return {"success": True, "platform": "facebook", "post_id": post_id, "post_url": build_platform_post_url(account, "facebook", post_id)}
+        photo_id = upload_facebook_attached_media(account, target_id, str(media_path))
+        return publish_facebook_feed_post(account, target_id, content, [photo_id])
 
-    attached_media: list[dict[str, str]] = []
-    for media in media_paths:
-        attached_media.append({"media_fbid": upload_facebook_attached_media(account, target_id, media)})
+    if any(is_video_path(media) for media in media_paths):
+        raise RuntimeError(
+            "Facebook feed attachment publishing supports photo sets only. "
+            "Use a single video post or remove videos from the multi-media Facebook post."
+        )
 
-    publish_response = requests.post(
-        f"{base_url}/{target_id}/feed",
-        data={
-            "message": content,
-            "attached_media": json.dumps(attached_media),
-            "access_token": account.access_token,
-        },
-        timeout=API_TIMEOUT_SECONDS,
-    )
-    payload = ensure_success(publish_response, "Facebook")
-    post_id = payload.get("id")
-    return {"success": True, "platform": "facebook", "post_id": post_id, "post_url": build_platform_post_url(account, "facebook", post_id)}
+    attached_photo_ids = [
+        upload_facebook_attached_media(account, target_id, media)
+        for media in media_paths
+    ]
+    return publish_facebook_feed_post(account, target_id, content, attached_photo_ids)
 
 
 def twitter_upload_media(oauth: OAuth1, media_file_path: str) -> str:
@@ -1096,7 +1415,7 @@ def post_to_pinterest_live(account: SocialAccount, post: Post, media_paths: list
     board_id = resolve_pinterest_board_id(account)
     payload = {
         "board_id": board_id,
-        "title": (post.content or "Sample SoMe-Auto Post")[:100],
+        "title": (post.content or "MSS SoME-Auto Post")[:100],
         "description": post.content or "",
         "media_source": {"source_type": "image_url", "url": media_url},
     }
@@ -1151,7 +1470,43 @@ def publish_to_platform(
         return {"success": False, "platform": account.platform, "error": error_message}
 
 
-def apply_platform_result(post: Post, platform: str, platform_post_id: str | None, platform_post_url: str | None = None) -> None:
+def record_platform_post_reference(
+    post: Post,
+    account: SocialAccount,
+    platform_post_id: str | None,
+    platform_post_url: str | None = None,
+) -> None:
+    if not platform_post_id:
+        return
+
+    reference = PlatformPostReference.query.filter_by(
+        internal_post_id=post.id,
+        social_account_id=account.id,
+        platform_post_id=str(platform_post_id),
+    ).first()
+    if not reference:
+        reference = PlatformPostReference(
+            internal_post_id=post.id,
+            social_account_id=account.id,
+            platform=account.platform,
+            platform_post_id=str(platform_post_id),
+        )
+        db.session.add(reference)
+
+    reference.platform = account.platform
+    reference.permalink = platform_post_url or post.platform_url_map().get(account.platform)
+    reference.published_at = post.posted_at or utcnow()
+    reference.media_type = post.media_type
+    reference.caption_preview = (post.content or "")[:280]
+
+
+def apply_platform_result(
+    post: Post,
+    platform: str,
+    platform_post_id: str | None,
+    platform_post_url: str | None = None,
+    account: SocialAccount | None = None,
+) -> None:
     if platform == "facebook":
         post.facebook_post_id = platform_post_id
     elif platform == "instagram":
@@ -1169,6 +1524,8 @@ def apply_platform_result(post: Post, platform: str, platform_post_id: str | Non
     else:
         url_map.pop(platform, None)
     post.platform_post_urls = json.dumps(url_map) if url_map else None
+    if account:
+        record_platform_post_reference(post, account, platform_post_id, platform_post_url)
 
 
 def finalize_post_status_after_execution(post: Post, automated_results: list[dict[str, Any]]) -> None:
@@ -1265,6 +1622,7 @@ def apply_planning_row_non_actionable_state(row: PlanningRow, next_is_non_action
 
             media_refs = set(linked_post.media_list())
             if linked_post.status in {"scheduled", "draft"}:
+                cancel_pending_facebook_remote_schedule(linked_post)
                 detach_planning_row_from_post(linked_post)
                 db.session.delete(linked_post)
                 cleanup_unreferenced_uploads(media_refs)
@@ -1274,7 +1632,7 @@ def apply_planning_row_non_actionable_state(row: PlanningRow, next_is_non_action
             row.scheduled_post_id = None
 
         clear_planning_warning_state(row, "designer")
-        clear_planning_warning_state(row, "Reviewer")
+        clear_planning_warning_state(row, "clarise")
         clear_planning_warning_state(row, "ready")
         row.job_color = "#D9D9D9"
         row.is_non_actionable = True
@@ -1306,6 +1664,8 @@ def schedule_post_from_planning_row_record(
             f"Job Nr color must be {PLANNING_READY_COLOR} (Content approved, schedule post) before scheduling."
         )
 
+    if not str(row.time_value or "").strip():
+        row.time_value = "10:00"
     scheduled_dt = parse_planning_schedule_datetime(row.date_value or "", row.time_value or "")
     if not scheduled_dt:
         raise RuntimeError("Invalid Date/Time in planning row. Use date + time values.")
@@ -1348,6 +1708,68 @@ def schedule_post_from_planning_row_record(
         scheduled_dt.isoformat(),
     )
     return row, post
+
+
+def publish_post_from_planning_row_record(
+    row: PlanningRow,
+    *,
+    require_ready_color: bool = True,
+    trigger: str = "manual_publish_now",
+) -> tuple[PlanningRow, Post, list[dict[str, Any]]]:
+    page = row.sheet.page if row.sheet else None
+    if page is None:
+        raise RuntimeError("Planning row is not linked to a page.")
+
+    if row.is_non_actionable:
+        raise RuntimeError("This is a non-actionable planning row and cannot be published.")
+
+    if row.scheduled_post_id:
+        raise RuntimeError("Planning row is already linked to a post.")
+
+    if require_ready_color and (row.job_color or "").upper() != PLANNING_READY_COLOR:
+        raise RuntimeError(
+            f"Job Nr color must be {PLANNING_READY_COLOR} (Content approved, schedule post) before publishing."
+        )
+
+    content = (row.post_copy or "").strip()
+    if not content:
+        raise RuntimeError("Post Copy is required to publish from planning row.")
+
+    media_items = row.creative_media_list()
+    if not media_items:
+        raise RuntimeError("Creative media is required (column 13) to publish.")
+    validate_page_creative_media(page, media_items)
+
+    platforms = get_active_page_platforms(page)
+    if not platforms:
+        raise RuntimeError("No active social platforms connected for this page.")
+
+    post = Post(
+        page_id=page.id,
+        content=content,
+        media_paths=json.dumps(media_items),
+        media_type=detect_media_type(media_items),
+        platforms=json.dumps(platforms),
+        scheduled_time=utcnow(),
+        status="posting",
+    )
+    db.session.add(post)
+    db.session.commit()
+
+    row.scheduled_post_id = post.id
+    row.job_color = PLANNING_SCHEDULED_COLOR
+    db.session.commit()
+
+    logger.info("Planning row %s created immediate publish post %s via %s trigger.", row.id, post.id, trigger)
+    results = execute_post(post.id)
+
+    try:
+        db.session.refresh(row)
+        db.session.refresh(post)
+    except Exception:
+        pass
+
+    return row, post, results
 
 
 def execute_post(post_id: int) -> list[dict[str, Any]]:
@@ -1396,6 +1818,24 @@ def execute_post(post_id: int) -> list[dict[str, Any]]:
     automated_results: list[dict[str, Any]] = []
 
     for platform in platforms:
+        if platform == "facebook" and post.facebook_remote_post_id:
+            result = scheduled_facebook_remote_result(post)
+            results.append(result)
+            automated_results.append(result)
+            account = SocialAccount.query.filter_by(
+                page_id=page.id,
+                platform=platform,
+                is_active=True,
+            ).first()
+            if account:
+                record_platform_post_reference(
+                    post,
+                    account,
+                    result.get("post_id"),
+                    result.get("post_url"),
+                )
+            continue
+
         if platform == "linkedin":
             results.append(
                 {
@@ -1439,7 +1879,8 @@ def execute_post(post_id: int) -> list[dict[str, Any]]:
         automated_results.append(result)
 
         if result.get("success"):
-            apply_platform_result(post, platform, result.get("post_id"), result.get("post_url"))
+            if not result.get("skip_apply_platform_result"):
+                apply_platform_result(post, platform, result.get("post_id"), result.get("post_url"), account=account)
             logger.info("Platform publish succeeded for post %s on %s.", post.id, platform)
         else:
             logger.info(
@@ -1458,4 +1899,3 @@ def execute_post(post_id: int) -> list[dict[str, Any]]:
         logger.warning("Post %s was deleted while publish results were being saved.", post_id)
     logger.info("Finished post %s with status=%s results=%s", post.id, post.status, results)
     return results
-

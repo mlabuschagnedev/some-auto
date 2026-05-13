@@ -106,7 +106,7 @@ export function IntegrationsTab(props: {
                   <article className="alert-row" key={account.id}>
                     <div>
                       <h3>
-                        {account.page_name} · {account.platform}
+                        {account.page_name} - {account.platform}
                       </h3>
                       <p>{account.account_name || "Unnamed account"}</p>
                       {account.missing_fields.length ? (
@@ -137,7 +137,7 @@ export function IntegrationsTab(props: {
                   <article className="alert-row" key={row.id}>
                     <div>
                       <h3>
-                        {row.page_name} · {row.platform}
+                        {row.page_name} - {row.platform}
                       </h3>
                       <p>{row.account_name || "Unnamed account"}</p>
                       <p className="muted">Expires: {formatDateTime(row.expires_at)}</p>

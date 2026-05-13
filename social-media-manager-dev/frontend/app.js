@@ -1,4 +1,4 @@
-﻿const API_BASE = `${window.location.origin}/api`;
+const API_BASE = `${window.location.origin}/api`;
 const STORAGE_KEY = "mss_some_auto_session";
 const TABS = ["pages", "scheduled", "posted", "planning", "settings", "integrations"];
 const PLATFORMS = ["facebook", "instagram", "linkedin", "twitter", "pinterest"];
@@ -31,7 +31,7 @@ const PLANNING_JOB_COLORS = [
   { hex: "#FBBC04", label: "content approved" },
   { hex: "#FF6D01", label: "design started" },
   { hex: "#34A853", label: "content approved, schedule post" },
-  { hex: "#137333", label: "Image has been sent to Reviewer." },
+  { hex: "#137333", label: "Image has been sent to Clarise." },
   { hex: "#0B57D0", label: "Post in scheduler" },
   { hex: "#980000", label: "stop post" },
   { hex: "#9900FF", label: "share" },
@@ -71,7 +71,7 @@ const FAQ_ITEMS = [
   {
     question: "Why do Instagram/Pinterest posts require PUBLIC_BASE_URL?",
     answer:
-      "Those APIs need externally reachable media URLs. Sample SoMe-Auto creates signed temporary links from your uploads when PUBLIC_BASE_URL is configured.",
+      "Those APIs need externally reachable media URLs. MSS SoME-Auto creates signed temporary links from your uploads when PUBLIC_BASE_URL is configured.",
   },
   {
     question: "What does live_posting_enabled do?",
@@ -81,12 +81,12 @@ const FAQ_ITEMS = [
   {
     question: "How does token refresh work?",
     answer:
-      "Facebook and Instagram now use one global Meta user token from Settings. Sample SoMe-Auto exchanges that token immediately, warns when it has less than 3 days left, re-derives Facebook Page tokens from it, and applies it automatically to Instagram accounts so the admin only rotates one Meta token in one place.",
+      "Facebook and Instagram now use one global Meta user token from Settings. MSS SoME-Auto exchanges that token immediately, warns when it has less than 3 days left, re-derives Facebook Page tokens from it, and applies it automatically to Instagram accounts so the admin only rotates one Meta token in one place.",
   },
   {
     question: "What Meta Graph API details do I need?",
     answer:
-      "Create a Meta app in the Meta for Developers dashboard, add Facebook Login plus the Facebook/Instagram permissions you need, store the Facebook App ID and App Secret once in Global Settings, generate a Meta user token in your OAuth flow or Graph API Explorer, then paste that token into Global Settings. Facebook page setup only needs the Facebook Page ID, and Instagram setup only needs the Instagram business account ID. Sample SoMe-Auto exchanges the Meta token automatically and uses it to derive Facebook Page tokens.",
+      "Create a Meta app in the Meta for Developers dashboard, add Facebook Login plus the Facebook/Instagram permissions you need, store the Facebook App ID and App Secret once in Global Settings, generate a Meta user token in your OAuth flow or Graph API Explorer, then paste that token into Global Settings. Facebook page setup only needs the Facebook Page ID, and Instagram setup only needs the Instagram business account ID. MSS SoME-Auto exchanges the Meta token automatically and uses it to derive Facebook Page tokens.",
   },
   {
     question: "How do I get LinkedIn API credentials?",
@@ -1605,7 +1605,7 @@ function renderLogin() {
   appEl.innerHTML = `
     <section class="auth-wrap">
       <div class="brand">
-        <h1>Sample SoMe-Auto</h1>
+        <h1>MSS SoME-Auto</h1>
         <p>Publishing control center</p>
       </div>
       <form id="login-form" class="panel auth-panel">
@@ -1659,7 +1659,7 @@ function renderApp() {
     <section class="shell">
       <header class="panel topbar">
         <div>
-          <h1>Sample SoMe-Auto</h1>
+          <h1>MSS SoME-Auto</h1>
           <p>Welcome, ${escapeHtml(currentUserDisplayName())}</p>
         </div>
         <div class="row stats-inline">
@@ -2462,7 +2462,7 @@ function renderUserManagementPanel() {
           <form id="user-form">
             <label>Username<input name="username" type="text" value="${escapeHtml(editor.username)}" ${editing ? "readonly" : ""} required /></label>
             <label>Display Name<input name="display_name" type="text" value="${escapeHtml(editor.display_name)}" placeholder="Shown in the planner and UI" /></label>
-            <label>Email<input name="email" type="email" value="${escapeHtml(editor.email)}" placeholder="Example@sample.co.za" /></label>
+            <label>Email<input name="email" type="email" value="${escapeHtml(editor.email)}" placeholder="name@example.com" /></label>
             <label>Role
               <select name="role" ${editor.is_owner ? "disabled" : ""}>
                 <option value="developer" ${editor.role === "developer" ? "selected" : ""}>developer</option>
@@ -2555,7 +2555,7 @@ function renderSettingsTab() {
         }
         <h3>General Settings</h3>
         <form id="settings-form">
-          <label>App Name<input name="app_name" type="text" value="${escapeHtml(state.settings.app_name || "Sample SoMe-Auto")}" ${isPageScope ? "disabled" : ""} /></label>
+          <label>App Name<input name="app_name" type="text" value="${escapeHtml(state.settings.app_name || "MSS SoME-Auto")}" ${isPageScope ? "disabled" : ""} /></label>
           <label>Default Post Time<input name="default_post_time" type="time" value="${escapeHtml(state.settings.default_post_time || "10:00")}" /></label>
           <label>Timezone<input name="timezone" type="text" value="${escapeHtml(state.settings.timezone || "Africa/Johannesburg")}" /></label>
           <label>Auto Schedule
@@ -2584,8 +2584,8 @@ function renderSettingsTab() {
                 <label>Facebook App ID<input name="facebook_app_id" type="text" value="${escapeHtml(state.settings.facebook_app_id || "")}" autocomplete="off" /></label>
                 <label>Facebook App Secret<input name="facebook_app_secret" type="password" value="${escapeHtml(state.settings.facebook_app_secret || "")}" autocomplete="new-password" /></label>
                 <label>Global Meta User Token<textarea name="global_meta_user_token" rows="4" placeholder="Paste a fresh Meta user token here to exchange and propagate it across Facebook/Instagram accounts.">${escapeHtml(state.settings.global_meta_user_token || "")}</textarea></label>
-                <label>Designer Email Routing<textarea name="designer_email_map" rows="5" placeholder="Emma=Example@sample.co.za&#10;Quinton=Example@sample.co.za">${escapeHtml(state.settings.designer_email_map || "")}</textarea></label>
-                <p class="muted">Use one designer-to-email mapping per line in the form <code>Name=Example@sample.co.za</code>. This controls who receives missing-creative warning emails.</p>
+                <label>Designer Email Routing<textarea name="designer_email_map" rows="5" placeholder="Emma=emma@example.com&#10;Quinton=quinton@example.com">${escapeHtml(state.settings.designer_email_map || "")}</textarea></label>
+                <p class="muted">Use one designer-to-email mapping per line in the form <code>Name=email@example.com</code>. This controls who receives missing-creative warning emails.</p>
               `
           }
           <p class="muted">Set PUBLIC_BASE_URL for temporary signed media links used by Instagram/Pinterest uploads.</p>
@@ -5291,4 +5291,3 @@ async function boot() {
 }
 
 boot();
-

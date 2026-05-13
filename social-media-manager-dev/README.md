@@ -1,11 +1,11 @@
-﻿# Sample SoMe-Auto
+# MSS SoME-Auto
 
-`Sample SoMe-Auto` is a local web application for social media scheduling and publishing.
+`MSS SoME-Auto` is a local web application for social media scheduling and publishing.
 
 ## Current architecture
 
 - Flask backend API
-- SQLAlchemy (SQLite by default)
+- SQLAlchemy with PostgreSQL by default
 - JWT auth with access and refresh tokens
 - APScheduler for post execution and token maintenance
 - Browser frontend (HTML/CSS/JS) served by Flask
@@ -19,12 +19,14 @@
 
 1. Create and activate a virtual environment.
 2. Install dependencies.
-3. Start the app.
+3. Create a PostgreSQL database and set `DATABASE_URL`.
+4. Start the app.
 
-```bash
+```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r backend/requirements.txt
+$env:DATABASE_URL = "postgresql+psycopg://mss_some_auto:mss_some_auto@localhost:5432/mss_some_auto"
 python backend/app.py
 ```
 
@@ -36,8 +38,8 @@ The app bootstraps one protected developer account from `instance/users.json`.
 
 If the file does not exist yet, the bootstrap account defaults to:
 
-- Username: `Example User`
-- Password: `change-me-example-password`
+- Username: `marcel`
+- Password: `admin123`
 
 You can override the bootstrap owner with:
 
@@ -53,7 +55,10 @@ Additional users are created, edited, activated, deactivated, and deleted inside
 Core:
 
 - `JWT_SECRET_KEY`
-- `DATABASE_URL` (default: SQLite under `instance/`)
+- `DATABASE_URL` (default: `postgresql+psycopg://mss_some_auto:mss_some_auto@localhost:5432/mss_some_auto`; SQLite is blocked unless `ALLOW_SQLITE_FOR_TESTS=1`)
+- `DATABASE_POOL_SIZE` (default: `5`)
+- `DATABASE_MAX_OVERFLOW` (default: `10`)
+- `DATABASE_POOL_RECYCLE_SECONDS` (default: `1800`)
 - `UPLOAD_DIR` (default: `uploads/`)
 - `API_TIMEOUT_SECONDS` (default: `30`)
 - `APP_TIMEZONE` (default: `Africa/Johannesburg`)
@@ -61,6 +66,11 @@ Core:
 - `MEDIA_URL_SIGNING_SECRET` (optional; falls back to `JWT_SECRET_KEY`)
 - `AUTO_TRYCLOUDFLARE_TUNNEL` (default: `1`; auto-starts quick tunnel and refreshes `PUBLIC_BASE_URL` each app run when not using a custom domain)
 - `FLASK_DEBUG` (default: `1`; app runs with reloader disabled in `start.py` to avoid duplicate schedulers/tunnels)
+- `SOCIAL_INSIGHTS_REFRESH_INTERVAL_SECONDS` (default: `7200`; scheduled Meta insights refresh cadence)
+- `SOCIAL_INSIGHTS_MIN_REFRESH_SECONDS` (default: `6900`; skip guard to avoid repeat refreshes after restarts)
+- `SOCIAL_INSIGHTS_ACCOUNT_PACE_SECONDS` (default: `4`; delay between account refreshes in the scheduled insights job)
+- `SOCIAL_INSIGHTS_META_API_VERSION` (default: `v25.0`; Graph API version used for Facebook/Instagram insight reads)
+- `DISABLE_SCHEDULER` (default: `0`; set to `1` for one-off scripts that import the Flask app without running background jobs)
 - `PRIMARY_DEVELOPER_USERNAME`
 - `PRIMARY_DEVELOPER_DISPLAY_NAME`
 - `PRIMARY_DEVELOPER_EMAIL`
@@ -200,4 +210,3 @@ Use the **Integrations** tab in the web app to verify:
 - `DELETE /api/planning/rows/:id`
 - `POST /api/planning/rows/:id/creative`
 - `POST /api/planning/rows/:id/schedule`
-

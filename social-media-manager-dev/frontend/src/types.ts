@@ -1,4 +1,4 @@
-﻿export interface AuthUser {
+export interface AuthUser {
   username: string;
   display_name: string;
   email: string | null;
@@ -132,7 +132,7 @@ export interface PlanningRowRecord {
   creative_media_count: number;
   designer: string;
   designer_warning_sent_at: string | null;
-  Reviewer_warning_sent_at: string | null;
+  clarise_warning_sent_at: string | null;
   ready_warning_sent_at: string | null;
   scheduled_post_id: number | null;
   created_at: string;
@@ -341,3 +341,58 @@ export interface WorkspaceData {
   settings: SettingsSnapshot | null;
 }
 
+export interface SocialInsightRecord {
+  id: number;
+  social_account_id: number;
+  platform: string;
+  metric_name: string;
+  metric_value: number | null;
+  period: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  source_metadata: Record<string, unknown>;
+  refreshed_at: string;
+  refresh_run_id: string | null;
+  refresh_run_started_at: string | null;
+  last_success_at: string | null;
+  last_error_at: string | null;
+  error_message: string | null;
+}
+
+export interface AnalyticsAccountRecord {
+  id: number;
+  page_id: number;
+  page_name: string | null;
+  platform: string;
+  account_name: string | null;
+  page_id_external: string | null;
+  is_active: boolean;
+  ready: boolean;
+  last_refreshed_at: string | null;
+  last_refresh_run_id: string | null;
+  last_refresh_run_started_at: string | null;
+  last_error: string | null;
+  insight_count: number;
+  insights: SocialInsightRecord[];
+}
+
+export interface AnalyticsPostInsightRecord {
+  id: number;
+  internal_post_id: number;
+  social_account_id: number;
+  page_name: string | null;
+  account_name: string | null;
+  thumbnail: string | null;
+  caption: string;
+  platform: string;
+  platform_post_id: string;
+  published_at: string | null;
+  views: number;
+  reach: number;
+  engagement: number;
+  comments: number;
+  shares: number;
+  permalink: string | null;
+  state: string;
+  metrics: Record<string, number | null>;
+}

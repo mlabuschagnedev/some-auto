@@ -16,7 +16,7 @@ from ..planning import (
     planning_month_label,
     planning_row_sort_key,
 )
-from ..publishing import schedule_post_from_planning_row_record
+from ..publishing import publish_post_from_planning_row_record, schedule_post_from_planning_row_record
 from ..media import cleanup_unreferenced_uploads, store_upload, validate_page_creative_media
 from ..routes.common import (
     Any,
@@ -289,6 +289,29 @@ def schedule_from_planning_row(row_id: int) -> Any:
             "message": "Post scheduled from planning row.",
             "row": row.to_dict(),
             "post": post.to_dict(),
+        }
+    )
+
+def publish_from_planning_row(row_id: int) -> Any:
+    row = PlanningRow.query.options(joinedload(PlanningRow.sheet).joinedload(PlanningSheet.page)).get_or_404(row_id)
+    try:
+        row, post, results = publish_post_from_planning_row_record(row, require_ready_color=True)
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 400
+
+    failure_count = sum(1 for result in results if not result.get("success") and not result.get("pending"))
+    success_count = sum(1 for result in results if result.get("success"))
+    pending_count = sum(1 for result in results if result.get("pending"))
+    return jsonify(
+        {
+            "message": (
+                f"Publishing finished: {success_count} succeeded"
+                f"{f', {pending_count} manual pending' if pending_count else ''}"
+                f"{f', {failure_count} failed' if failure_count else ''}."
+            ),
+            "row": row.to_dict(),
+            "post": post.to_dict(),
+            "results": results,
         }
     )
 

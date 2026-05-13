@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from . import app as core
 from .auth import AuthUser, list_auth_users
@@ -291,7 +291,7 @@ def parse_designer_email_map(raw: str | None) -> dict[str, str]:
             continue
         separator = "=" if "=" in cleaned else ":" if ":" in cleaned else None
         if separator is None:
-            raise ValueError("Designer email mappings must use one entry per line in the form Name=Example@sample.co.za.")
+            raise ValueError("Designer email mappings must use one entry per line in the form Name=email@example.com.")
         name, email = cleaned.split(separator, 1)
         name = name.strip()
         email = email.strip()
@@ -435,5 +435,4 @@ PLANNING_CSV_IMPORT_FIELDS = [
     "deadline",
     "mss_notes",
 ]
-
 

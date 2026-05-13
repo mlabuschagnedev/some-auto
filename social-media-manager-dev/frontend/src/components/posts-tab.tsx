@@ -159,7 +159,7 @@ export function PostsTab(props: {
                   <div className="post-card-header">
                     <div>
                       <h3>
-                        #{post.id} · {post.page_name || "Unknown page"}
+                        #{post.id} - {post.page_name || "Unknown page"}
                       </h3>
                       <p>{post.platforms.join(", ") || "No platforms"}</p>
                     </div>

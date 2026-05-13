@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from . import app as core
 
@@ -13,6 +13,7 @@ json = core.json
 json_loads_safe = core.json_loads_safe
 normalize_planning_month = core.normalize_planning_month
 normalize_timezone_name = core.normalize_timezone_name
+or_ = core.or_
 planning_month_label = core.planning_month_label
 text = core.text
 utcnow = core.utcnow
@@ -143,6 +144,11 @@ class Post(db.Model):
     error_message = db.Column(db.Text, nullable=True)
 
     facebook_post_id = db.Column(db.String(100), nullable=True)
+    facebook_remote_post_id = db.Column(db.String(100), nullable=True)
+    facebook_remote_state = db.Column(db.String(40), nullable=True)
+    facebook_remote_scheduled_time = db.Column(db.DateTime, nullable=True)
+    facebook_remote_last_error = db.Column(db.Text, nullable=True)
+    facebook_remote_synced_at = db.Column(db.DateTime, nullable=True)
     instagram_post_id = db.Column(db.String(100), nullable=True)
     linkedin_post_id = db.Column(db.String(100), nullable=True)
     twitter_post_id = db.Column(db.String(100), nullable=True)
@@ -214,6 +220,13 @@ class Post(db.Model):
                 "pinterest": self.pinterest_post_id,
             },
             "platform_urls": build_post_platform_urls(self),
+            "facebook_remote": {
+                "post_id": self.facebook_remote_post_id,
+                "state": self.facebook_remote_state,
+                "scheduled_time": self.facebook_remote_scheduled_time.isoformat() if self.facebook_remote_scheduled_time else None,
+                "last_error": self.facebook_remote_last_error,
+                "synced_at": self.facebook_remote_synced_at.isoformat() if self.facebook_remote_synced_at else None,
+            },
             "linkedin_manual": self.linkedin_manual_payload(),
         }
 
@@ -278,6 +291,187 @@ class PageSetting(db.Model):
         return {row.key: row.value for row in rows}
 
 
+class SocialInsight(db.Model):
+    __table_args__ = (
+        UniqueConstraint(
+            "social_account_id",
+            "metric_name",
+            "period",
+            "start_date",
+            "end_date",
+            name="uq_social_insight_metric_period",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    social_account_id = db.Column(db.Integer, db.ForeignKey("social_account.id"), nullable=False, index=True)
+    platform = db.Column(db.String(50), nullable=False, index=True)
+    metric_name = db.Column(db.String(120), nullable=False, index=True)
+    metric_value = db.Column(db.Float, nullable=True)
+    period = db.Column(db.String(40), nullable=True)
+    start_date = db.Column(db.DateTime, nullable=True, index=True)
+    end_date = db.Column(db.DateTime, nullable=True, index=True)
+    source_metadata = db.Column(db.Text, nullable=True)
+    refreshed_at = db.Column(db.DateTime, default=utcnow, nullable=False, index=True)
+    refresh_run_id = db.Column(db.String(64), nullable=True, index=True)
+    refresh_run_started_at = db.Column(db.DateTime, nullable=True, index=True)
+    last_success_at = db.Column(db.DateTime, nullable=True)
+    last_error_at = db.Column(db.DateTime, nullable=True)
+    error_message = db.Column(db.Text, nullable=True)
+
+    account = db.relationship("SocialAccount", backref=db.backref("insights", lazy=True, cascade="all, delete-orphan"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "social_account_id": self.social_account_id,
+            "platform": self.platform,
+            "metric_name": self.metric_name,
+            "metric_value": self.metric_value,
+            "period": self.period,
+            "start_date": self.start_date.isoformat() if self.start_date else None,
+            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "source_metadata": json_loads_safe(self.source_metadata, {}) if self.source_metadata else {},
+            "refreshed_at": self.refreshed_at.isoformat(),
+            "refresh_run_id": self.refresh_run_id,
+            "refresh_run_started_at": self.refresh_run_started_at.isoformat() if self.refresh_run_started_at else None,
+            "last_success_at": self.last_success_at.isoformat() if self.last_success_at else None,
+            "last_error_at": self.last_error_at.isoformat() if self.last_error_at else None,
+            "error_message": self.error_message,
+        }
+
+
+class AccountInsightSnapshot(db.Model):
+    __table_args__ = (
+        UniqueConstraint(
+            "social_account_id",
+            "metric_name",
+            "period",
+            "date",
+            "raw_metric_name",
+            name="uq_account_insight_snapshot_metric_period",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    social_account_id = db.Column(db.Integer, db.ForeignKey("social_account.id"), nullable=False, index=True)
+    platform = db.Column(db.String(50), nullable=False, index=True)
+    metric_name = db.Column(db.String(120), nullable=False, index=True)
+    metric_value = db.Column(db.Float, nullable=True)
+    period = db.Column(db.String(40), nullable=True)
+    date = db.Column(db.DateTime, nullable=True, index=True)
+    source = db.Column(db.String(80), nullable=True, index=True)
+    raw_metric_name = db.Column(db.String(160), nullable=True, index=True)
+    fetched_at = db.Column(db.DateTime, default=utcnow, nullable=False, index=True)
+    status = db.Column(db.String(40), nullable=False, default="ok", index=True)
+    error_message = db.Column(db.Text, nullable=True)
+
+    account = db.relationship("SocialAccount", backref=db.backref("account_insight_snapshots", lazy=True, cascade="all, delete-orphan"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "social_account_id": self.social_account_id,
+            "platform": self.platform,
+            "metric_name": self.metric_name,
+            "metric_value": self.metric_value,
+            "period": self.period,
+            "date": self.date.isoformat() if self.date else None,
+            "source": self.source,
+            "raw_metric_name": self.raw_metric_name,
+            "fetched_at": self.fetched_at.isoformat(),
+            "status": self.status,
+            "error_message": self.error_message,
+        }
+
+
+class PlatformPostReference(db.Model):
+    __table_args__ = (
+        UniqueConstraint(
+            "internal_post_id",
+            "social_account_id",
+            "platform_post_id",
+            name="uq_platform_post_reference_post_account_remote",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    internal_post_id = db.Column(db.Integer, db.ForeignKey("post.id"), nullable=False, index=True)
+    social_account_id = db.Column(db.Integer, db.ForeignKey("social_account.id"), nullable=False, index=True)
+    platform = db.Column(db.String(50), nullable=False, index=True)
+    platform_post_id = db.Column(db.String(160), nullable=False, index=True)
+    permalink = db.Column(db.Text, nullable=True)
+    published_at = db.Column(db.DateTime, nullable=True, index=True)
+    media_type = db.Column(db.String(40), nullable=True)
+    caption_preview = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    post = db.relationship("Post", backref=db.backref("platform_references", lazy=True, cascade="all, delete-orphan"))
+    account = db.relationship("SocialAccount", backref=db.backref("platform_post_references", lazy=True, cascade="all, delete-orphan"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "internal_post_id": self.internal_post_id,
+            "social_account_id": self.social_account_id,
+            "platform": self.platform,
+            "platform_post_id": self.platform_post_id,
+            "permalink": self.permalink,
+            "published_at": self.published_at.isoformat() if self.published_at else None,
+            "media_type": self.media_type,
+            "caption_preview": self.caption_preview,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
+
+
+class PostInsightSnapshot(db.Model):
+    __table_args__ = (
+        UniqueConstraint(
+            "internal_post_id",
+            "social_account_id",
+            "platform_post_id",
+            "metric_name",
+            "period",
+            "date",
+            name="uq_post_insight_snapshot_metric_period",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    internal_post_id = db.Column(db.Integer, db.ForeignKey("post.id"), nullable=False, index=True)
+    social_account_id = db.Column(db.Integer, db.ForeignKey("social_account.id"), nullable=False, index=True)
+    platform_post_id = db.Column(db.String(160), nullable=False, index=True)
+    platform = db.Column(db.String(50), nullable=False, index=True)
+    metric_name = db.Column(db.String(120), nullable=False, index=True)
+    metric_value = db.Column(db.Float, nullable=True)
+    period = db.Column(db.String(40), nullable=True)
+    date = db.Column(db.DateTime, nullable=True, index=True)
+    fetched_at = db.Column(db.DateTime, default=utcnow, nullable=False, index=True)
+    status = db.Column(db.String(40), nullable=False, default="ok", index=True)
+    error_message = db.Column(db.Text, nullable=True)
+
+    post = db.relationship("Post", backref=db.backref("post_insight_snapshots", lazy=True, cascade="all, delete-orphan"))
+    account = db.relationship("SocialAccount", backref=db.backref("post_insight_snapshots", lazy=True, cascade="all, delete-orphan"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "internal_post_id": self.internal_post_id,
+            "social_account_id": self.social_account_id,
+            "platform_post_id": self.platform_post_id,
+            "platform": self.platform,
+            "metric_name": self.metric_name,
+            "metric_value": self.metric_value,
+            "period": self.period,
+            "date": self.date.isoformat() if self.date else None,
+            "fetched_at": self.fetched_at.isoformat(),
+            "status": self.status,
+            "error_message": self.error_message,
+        }
+
+
 class PlanningSheet(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     page_id = db.Column(db.Integer, db.ForeignKey("page.id"), nullable=False, unique=True, index=True)
@@ -327,8 +521,8 @@ class PlanningRow(db.Model):
     designer = db.Column(db.String(120), nullable=True)
     designer_warning_key = db.Column(db.String(64), nullable=True)
     designer_warning_sent_at = db.Column(db.DateTime, nullable=True)
-    Reviewer_warning_key = db.Column(db.String(64), nullable=True)
-    Reviewer_warning_sent_at = db.Column(db.DateTime, nullable=True)
+    clarise_warning_key = db.Column(db.String(64), nullable=True)
+    clarise_warning_sent_at = db.Column(db.DateTime, nullable=True)
     ready_warning_key = db.Column(db.String(64), nullable=True)
     ready_warning_sent_at = db.Column(db.DateTime, nullable=True)
 
@@ -385,7 +579,7 @@ class PlanningRow(db.Model):
             "creative_media_count": len(media_items),
             "designer": self.designer or "",
             "designer_warning_sent_at": self.designer_warning_sent_at.isoformat() if self.designer_warning_sent_at else None,
-            "Reviewer_warning_sent_at": self.Reviewer_warning_sent_at.isoformat() if self.Reviewer_warning_sent_at else None,
+            "clarise_warning_sent_at": self.clarise_warning_sent_at.isoformat() if self.clarise_warning_sent_at else None,
             "ready_warning_sent_at": self.ready_warning_sent_at.isoformat() if self.ready_warning_sent_at else None,
             "scheduled_post_id": self.scheduled_post_id,
             "created_at": self.created_at.isoformat(),
@@ -426,55 +620,94 @@ def seed_planning_sheets() -> None:
 
 def ensure_runtime_schema() -> None:
     inspector = inspect(db.engine)
+    dialect_name = db.engine.dialect.name
+
+    def column_type(kind: str) -> str:
+        if kind == "datetime":
+            return "TIMESTAMP WITHOUT TIME ZONE" if dialect_name == "postgresql" else "DATETIME"
+        if kind == "boolean_required_false":
+            return "BOOLEAN NOT NULL DEFAULT FALSE" if dialect_name == "postgresql" else "BOOLEAN NOT NULL DEFAULT 0"
+        return kind
+
+    def add_column(table_name: str, column_name: str, definition: str) -> None:
+        with db.engine.begin() as connection:
+            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
+
     if inspector.has_table("page"):
         page_columns = {column["name"] for column in inspector.get_columns("page")}
         if "linkedin_page_url" not in page_columns:
-            with db.engine.begin() as connection:
-                connection.execute(text("ALTER TABLE page ADD COLUMN linkedin_page_url VARCHAR(500)"))
+            add_column("page", "linkedin_page_url", "VARCHAR(500)")
 
     if inspector.has_table("post"):
         post_columns = {column["name"] for column in inspector.get_columns("post")}
         if "platform_post_urls" not in post_columns:
-            with db.engine.begin() as connection:
-                connection.execute(text("ALTER TABLE post ADD COLUMN platform_post_urls TEXT"))
+            add_column("post", "platform_post_urls", "TEXT")
+        if "facebook_remote_post_id" not in post_columns:
+            add_column("post", "facebook_remote_post_id", "VARCHAR(100)")
+        if "facebook_remote_state" not in post_columns:
+            add_column("post", "facebook_remote_state", "VARCHAR(40)")
+        if "facebook_remote_scheduled_time" not in post_columns:
+            add_column("post", "facebook_remote_scheduled_time", column_type("datetime"))
+        if "facebook_remote_last_error" not in post_columns:
+            add_column("post", "facebook_remote_last_error", "TEXT")
+        if "facebook_remote_synced_at" not in post_columns:
+            add_column("post", "facebook_remote_synced_at", column_type("datetime"))
         if "linkedin_manual_done_at" not in post_columns:
-            with db.engine.begin() as connection:
-                connection.execute(text("ALTER TABLE post ADD COLUMN linkedin_manual_done_at DATETIME"))
+            add_column("post", "linkedin_manual_done_at", column_type("datetime"))
         if "linkedin_manual_done_by" not in post_columns:
-            with db.engine.begin() as connection:
-                connection.execute(text("ALTER TABLE post ADD COLUMN linkedin_manual_done_by VARCHAR(120)"))
+            add_column("post", "linkedin_manual_done_by", "VARCHAR(120)")
+
+    if inspector.has_table("social_insight"):
+        insight_columns = {column["name"] for column in inspector.get_columns("social_insight")}
+        if "refresh_run_id" not in insight_columns:
+            add_column("social_insight", "refresh_run_id", "VARCHAR(64)")
+        if "refresh_run_started_at" not in insight_columns:
+            add_column("social_insight", "refresh_run_started_at", column_type("datetime"))
+
+        removed_metric_patterns = ["page_fan%"]
+        removed_metric_names = {
+            "fan_count",
+            "fans",
+            "page_fans",
+            "page_fans_city",
+            "page_fans_country",
+            "page_fans_locale",
+            "page_fan_adds",
+            "page_fan_adds_unique",
+            "page_fan_adds_by_paid_non_paid_unique",
+            "page_fan_removes",
+            "page_fan_removes_unique",
+        }
+        removed_filter = or_(
+            func.lower(SocialInsight.metric_name).in_(removed_metric_names),
+            *[func.lower(SocialInsight.metric_name).like(pattern) for pattern in removed_metric_patterns],
+        )
+        removed_count = SocialInsight.query.filter(removed_filter).delete(synchronize_session=False)
+        if removed_count:
+            db.session.commit()
 
     if not inspector.has_table("planning_row"):
         return
 
     columns = {column["name"] for column in inspector.get_columns("planning_row")}
     if "planning_month" not in columns:
-        with db.engine.begin() as connection:
-            connection.execute(text("ALTER TABLE planning_row ADD COLUMN planning_month VARCHAR(7)"))
+        add_column("planning_row", "planning_month", "VARCHAR(7)")
     if "is_non_actionable" not in columns:
-        with db.engine.begin() as connection:
-            connection.execute(text("ALTER TABLE planning_row ADD COLUMN is_non_actionable BOOLEAN NOT NULL DEFAULT 0"))
+        add_column("planning_row", "is_non_actionable", column_type("boolean_required_false"))
     if "creative_media_paths" not in columns:
-        with db.engine.begin() as connection:
-            connection.execute(text("ALTER TABLE planning_row ADD COLUMN creative_media_paths TEXT"))
+        add_column("planning_row", "creative_media_paths", "TEXT")
     if "designer_warning_key" not in columns:
-        with db.engine.begin() as connection:
-            connection.execute(text("ALTER TABLE planning_row ADD COLUMN designer_warning_key VARCHAR(64)"))
+        add_column("planning_row", "designer_warning_key", "VARCHAR(64)")
     if "designer_warning_sent_at" not in columns:
-        with db.engine.begin() as connection:
-            connection.execute(text("ALTER TABLE planning_row ADD COLUMN designer_warning_sent_at DATETIME"))
-    if "Reviewer_warning_key" not in columns:
-        with db.engine.begin() as connection:
-            connection.execute(text("ALTER TABLE planning_row ADD COLUMN Reviewer_warning_key VARCHAR(64)"))
-    if "Reviewer_warning_sent_at" not in columns:
-        with db.engine.begin() as connection:
-            connection.execute(text("ALTER TABLE planning_row ADD COLUMN Reviewer_warning_sent_at DATETIME"))
+        add_column("planning_row", "designer_warning_sent_at", column_type("datetime"))
+    if "clarise_warning_key" not in columns:
+        add_column("planning_row", "clarise_warning_key", "VARCHAR(64)")
+    if "clarise_warning_sent_at" not in columns:
+        add_column("planning_row", "clarise_warning_sent_at", column_type("datetime"))
     if "ready_warning_key" not in columns:
-        with db.engine.begin() as connection:
-            connection.execute(text("ALTER TABLE planning_row ADD COLUMN ready_warning_key VARCHAR(64)"))
+        add_column("planning_row", "ready_warning_key", "VARCHAR(64)")
     if "ready_warning_sent_at" not in columns:
-        with db.engine.begin() as connection:
-            connection.execute(text("ALTER TABLE planning_row ADD COLUMN ready_warning_sent_at DATETIME"))
+        add_column("planning_row", "ready_warning_sent_at", column_type("datetime"))
 
     rows_needing_month = PlanningRow.query.all()
     changed = False
@@ -508,4 +741,3 @@ def build_page_stats_map(page_ids: list[int]) -> dict[int, dict[str, int]]:
         elif status in {"scheduled", "posting", "manual_pending", "draft"}:
             stats[page_id]["scheduled_posts"] += int(count)
     return stats
-

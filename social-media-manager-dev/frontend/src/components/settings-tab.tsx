@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   createUserRecord,
   deleteUserRecord,
@@ -369,7 +369,7 @@ export function SettingsTab(props: {
               value={settings.global_meta_user_token}
             />
           </Field>
-          <Field label="Designer Email Routing" hint="One mapping per line in the form Name=Example@sample.co.za">
+          <Field label="Designer Email Routing" hint="One mapping per line in the form Name=email@example.com">
             <textarea
               onChange={(event) =>
                 setSettings((current) =>
@@ -677,4 +677,3 @@ export function SettingsTab(props: {
     </div>
   );
 }
-

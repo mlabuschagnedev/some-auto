@@ -1,5 +1,5 @@
-﻿"""
-Sample SoMe-Auto - Backend API
+"""
+MSS SoME-Auto - Backend API
 Clean Flask backend for local social media scheduling and publishing workflows.
 """
 
@@ -40,7 +40,7 @@ from flask_jwt_extended import (
     jwt_required,
 )
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import UniqueConstraint, func, inspect, text
+from sqlalchemy import UniqueConstraint, func, inspect, or_, text
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm.exc import StaleDataError
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -82,7 +82,7 @@ TIMEZONE_ALIASES = {
 }
 
 DEFAULT_SETTINGS = {
-    "app_name": "Sample SoMe-Auto",
+    "app_name": "MSS SoME-Auto",
     "default_post_time": "10:00",
     "timezone": APP_TIMEZONE_NAME,
     "auto_schedule": "true",
@@ -152,26 +152,31 @@ PAGE_REFERENCE_SHEET_MAX_TITLE_LENGTH = 120
 PAGE_REFERENCE_SHEET_MAX_LABEL_LENGTH = 80
 PAGE_REFERENCE_SHEET_MAX_CELL_HTML_LENGTH = 20000
 USER_ROLES = {"developer", "admin", "designer"}
-PRIMARY_DEVELOPER_USERNAME = (os.environ.get("PRIMARY_DEVELOPER_USERNAME", "exampleuser").strip() or "exampleuser").lower()
+PRIMARY_DEVELOPER_USERNAME = (os.environ.get("PRIMARY_DEVELOPER_USERNAME", "marcel").strip() or "marcel").lower()
 PRIMARY_DEVELOPER_DISPLAY_NAME = (
-    os.environ.get("PRIMARY_DEVELOPER_DISPLAY_NAME", "Example User").strip() or PRIMARY_DEVELOPER_USERNAME
+    os.environ.get("PRIMARY_DEVELOPER_DISPLAY_NAME", "Marcel").strip() or PRIMARY_DEVELOPER_USERNAME
 )
-PRIMARY_DEVELOPER_EMAIL = os.environ.get("PRIMARY_DEVELOPER_EMAIL", "Example@sample.co.za").strip() or None
-PRIMARY_DEVELOPER_PASSWORD = os.environ.get("PRIMARY_DEVELOPER_PASSWORD", "change-me-example-password")
+PRIMARY_DEVELOPER_EMAIL = os.environ.get("PRIMARY_DEVELOPER_EMAIL", "marcel@marketingss.co.za").strip() or None
+PRIMARY_DEVELOPER_PASSWORD = os.environ.get("PRIMARY_DEVELOPER_PASSWORD", "admin123")
 ROLE_TABS = {
     "developer": ["pages", "scheduled", "posted", "planning", "settings", "integrations"],
     "admin": ["pages", "scheduled", "posted", "planning"],
     "designer": ["scheduled", "posted", "planning"],
 }
 PLANNING_READY_COLOR = "#34A853"
-PLANNING_Reviewer_SENT_COLOR = "#137333"
+PLANNING_CLARISE_SENT_COLOR = "#137333"
 PLANNING_SCHEDULED_COLOR = "#0B57D0"
 PLANNING_POSTED_COLOR = "#666666"
 PLANNING_FAILED_COLOR = "#000000"
-PLANNING_AUTO_SCHEDULE_LEAD_MINUTES = 10
+FACEBOOK_NATIVE_SCHEDULE_BUFFER_MINUTES = int(os.environ.get("FACEBOOK_NATIVE_SCHEDULE_BUFFER_MINUTES", "25"))
+PLANNING_AUTO_SCHEDULE_LEAD_MINUTES = FACEBOOK_NATIVE_SCHEDULE_BUFFER_MINUTES + 1
 PLANNING_WARNING_LEAD_HOURS = 24
 PLANNING_READY_WARNING_LEAD_HOURS = 2
-PLANNING_Reviewer_REQUIRED_FIELDS = {
+SOCIAL_INSIGHTS_REFRESH_INTERVAL_SECONDS = int(os.environ.get("SOCIAL_INSIGHTS_REFRESH_INTERVAL_SECONDS", "7200"))
+SOCIAL_INSIGHTS_MIN_REFRESH_SECONDS = int(os.environ.get("SOCIAL_INSIGHTS_MIN_REFRESH_SECONDS", "6900"))
+SOCIAL_INSIGHTS_ACCOUNT_PACE_SECONDS = float(os.environ.get("SOCIAL_INSIGHTS_ACCOUNT_PACE_SECONDS", "4"))
+SOCIAL_INSIGHTS_META_API_VERSION = os.environ.get("SOCIAL_INSIGHTS_META_API_VERSION", "v25.0").strip() or "v25.0"
+PLANNING_CLARISE_REQUIRED_FIELDS = {
     "theme": "Theme",
     "post_copy": "Post Copy",
     "format": "Format",
@@ -182,11 +187,11 @@ EMAIL_TO = [
     for email in os.environ.get("EMAIL_TO", "").split(",")
     if email.strip()
 ]
-EMAIL_FROM = os.environ.get("EMAIL_FROM", "Example@sample.co.za").strip()
-SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.sample.co.za").strip()
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "marcel@marketingss.co.za").strip()
+SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.marketingss.co.za").strip()
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
-SMTP_USER = os.environ.get("SMTP_USER", "Example@sample.co.za").strip()
-SMTP_PASS = os.environ.get("SMTP_PASS", "sample-smtp-password",)
+SMTP_USER = os.environ.get("SMTP_USER", "marcel@marketingss.co.za").strip()
+SMTP_PASS = os.environ.get("SMTP_PASS", "Eaveplay123!@#",)
 SMTP_SECURITY = os.environ.get("SMTP_SECURITY", "ssl").strip().lower()
 SMTP_DEBUG = os.environ.get("SMTP_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
 SMTP_TRY_FALLBACK = os.environ.get("SMTP_TRY_FALLBACK", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -212,6 +217,12 @@ def parse_iso_datetime(value: str | None) -> datetime | None:
     if dt.tzinfo is not None:
         dt = dt.astimezone(APP_TIMEZONE).replace(tzinfo=None)
     return dt
+
+
+def local_datetime_to_unix_timestamp(value: datetime) -> int:
+    if value.tzinfo is None:
+        return int(value.replace(tzinfo=APP_TIMEZONE).timestamp())
+    return int(value.astimezone(APP_TIMEZONE).timestamp())
 
 
 def normalize_timezone_name(value: str | None) -> str | None:
@@ -339,10 +350,49 @@ def effective_planning_month_for_row(row: "PlanningRow") -> str:
     created_at = getattr(row, "created_at", None) or utcnow()
     return created_at.strftime("%Y-%m")
 
+
+def env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_database_url(raw_url: str) -> str:
+    cleaned = raw_url.strip()
+    if cleaned.startswith("postgres://"):
+        cleaned = "postgresql+psycopg://" + cleaned.removeprefix("postgres://")
+    elif cleaned.startswith("postgresql://") and "+psycopg" not in cleaned.split("://", 1)[0]:
+        cleaned = "postgresql+psycopg://" + cleaned.removeprefix("postgresql://")
+    return cleaned
+
+
+def resolve_database_url() -> str:
+    raw_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+psycopg://postgres:EAVEplay!#%&2468@localhost:5432/some_auto",
+    )
+    database_url = normalize_database_url(raw_url)
+    if database_url.startswith("sqlite") and not env_flag("ALLOW_SQLITE_FOR_TESTS"):
+        raise RuntimeError(
+            "SQLite is disabled for this app. Set DATABASE_URL to a PostgreSQL URL, "
+            "or set ALLOW_SQLITE_FOR_TESTS=1 for isolated tests."
+        )
+    return database_url
+
+
+def database_engine_options(database_url: str) -> dict[str, Any]:
+    if database_url.startswith("postgresql"):
+        return {
+            "pool_pre_ping": True,
+            "pool_recycle": int(os.environ.get("DATABASE_POOL_RECYCLE_SECONDS", "1800")),
+            "pool_size": int(os.environ.get("DATABASE_POOL_SIZE", "5")),
+            "max_overflow": int(os.environ.get("DATABASE_MAX_OVERFLOW", "10")),
+        }
+    return {"pool_pre_ping": True}
+
+
 app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
-    "DATABASE_URL", f"sqlite:///{(BASE_DIR / 'instance' / 'social_media_manager.db').as_posix()}"
-)
+DATABASE_URL = resolve_database_url()
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = database_engine_options(DATABASE_URL)
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=30)
@@ -408,5 +458,5 @@ if __name__ == "__main__":
         start_scheduler()
     app.run(host="0.0.0.0", port=5000, debug=True)
 else:
-    start_scheduler()
-
+    if not env_flag("DISABLE_SCHEDULER"):
+        start_scheduler()

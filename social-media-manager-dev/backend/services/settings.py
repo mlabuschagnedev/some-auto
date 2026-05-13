@@ -90,6 +90,12 @@ def update_settings() -> Any:
         data.get(GLOBAL_META_USER_TOKEN_KEY, data.get(LEGACY_META_GLOBAL_USER_TOKEN_KEY, "")) or ""
     ).strip()
     meta_token_changed = supplied_meta_token != current_meta_token
+    supplied_meta_app_id = str(data.get(FACEBOOK_APP_ID_SETTING_KEY, current_meta_app_id) or "").strip()
+    supplied_meta_app_secret = str(data.get(FACEBOOK_APP_SECRET_SETTING_KEY, current_meta_app_secret) or "").strip()
+    meta_credentials_changed = (
+        supplied_meta_app_id != current_meta_app_id
+        or supplied_meta_app_secret != current_meta_app_secret
+    )
     current_linkedin_token = (global_linkedin_access_token() or "").strip()
     current_linkedin_refresh = (global_linkedin_refresh_token() or "").strip()
     current_linkedin_expires = str(AppSetting.get_setting(GLOBAL_LINKEDIN_TOKEN_EXPIRES_AT_KEY, "") or "").strip()
@@ -127,10 +133,10 @@ def update_settings() -> Any:
                 return jsonify({"error": "Invalid timezone. Use a valid IANA timezone, e.g. Africa/Johannesburg."}), 400
             value = normalized
         AppSetting.set_setting(key, str(value), commit=False)
-    if meta_token_supplied and meta_token_changed:
+    if (meta_token_supplied and meta_token_changed) or (meta_credentials_changed and (supplied_meta_token or current_meta_token)):
         try:
             propagation_warnings = set_global_meta_user_token(
-                data.get(GLOBAL_META_USER_TOKEN_KEY, data.get(LEGACY_META_GLOBAL_USER_TOKEN_KEY))
+                supplied_meta_token if meta_token_supplied else current_meta_token
             )
         except Exception as error:
             db.session.rollback()
@@ -148,7 +154,10 @@ def update_settings() -> Any:
         except Exception as error:
             db.session.rollback()
             return jsonify({"error": str(error)}), 400
-    if not ((meta_token_supplied and meta_token_changed) or (linkedin_token_supplied and linkedin_token_changed)):
+    meta_normalized = (meta_token_supplied and meta_token_changed) or (
+        meta_credentials_changed and (supplied_meta_token or current_meta_token)
+    )
+    if not (meta_normalized or (linkedin_token_supplied and linkedin_token_changed)):
         db.session.commit()
 
     payload = get_global_settings()
@@ -162,15 +171,15 @@ def update_settings() -> Any:
     payload["designer_email_map"] = get_designer_email_map_setting_value()
     payload["meta_global"] = global_meta_status()
     payload["linkedin_global"] = global_linkedin_status()
-    if meta_token_supplied and meta_token_changed:
+    if meta_normalized:
         stored_meta_token = payload["global_meta_user_token"]
         meta_status = payload["meta_global"]
-        if not supplied_meta_token:
+        if meta_token_supplied and not supplied_meta_token:
             meta_token_result = {
                 "message": "Global Meta token cleared.",
                 "outcome": "cleared",
             }
-        elif stored_meta_token and stored_meta_token != supplied_meta_token:
+        elif stored_meta_token and stored_meta_token != (supplied_meta_token or current_meta_token):
             if meta_status.get("expiry_known"):
                 suffix = " This countdown is estimated at 50 days because Meta did not return an expiry date." if meta_status.get("expiry_assumed") else ""
                 meta_token_result = {

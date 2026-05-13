@@ -1,4 +1,4 @@
-﻿export function AuthScreen(props: {
+export function AuthScreen(props: {
   busy: boolean;
   error: string | null;
   onSubmit: (username: string, password: string) => void;
@@ -8,7 +8,7 @@
       <section className="auth-panel">
         <div className="auth-copy">
           <p className="eyebrow">Dev Frontend</p>
-          <h1>Sample SoMe-Auto</h1>
+          <h1>MSS SoME-Auto</h1>
           <p>
             This dev workspace now carries the operational frontend directly.
             The live site remains untouched until you choose to ship changes.
@@ -67,4 +67,3 @@ function LoginForm(props: {
     </form>
   );
 }
-

@@ -1,5 +1,7 @@
 import type {
   AccountOperationResponse,
+  AnalyticsAccountRecord,
+  AnalyticsPostInsightRecord,
   GlobalSettingsPayload,
   IntegrationAccount,
   LoginResponse,
@@ -14,6 +16,7 @@ import type {
   SchedulerStatus,
   SessionPayload,
   SettingsSnapshot,
+  SocialInsightRecord,
   TokenStatusRow,
   UserRecord,
   VerifyResponse,
@@ -227,8 +230,112 @@ export async function logoutSession(
   }
 }
 
-function normalizePages(payload: PageRecord[] | { items: PageRecord[] }): PageRecord[] {
-  return Array.isArray(payload) ? payload : payload.items;
+function normalizeArray<T>(payload: unknown, wrappedKey?: string): T[] {
+  if (Array.isArray(payload)) {
+    return payload as T[];
+  }
+
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if (wrappedKey && Array.isArray(record[wrappedKey])) {
+      return record[wrappedKey] as T[];
+    }
+    if (Array.isArray(record.items)) {
+      return record.items as T[];
+    }
+    if (Array.isArray(record.rows)) {
+      return record.rows as T[];
+    }
+  }
+
+  return [];
+}
+
+function normalizePages(payload: unknown): PageRecord[] {
+  return normalizeArray<PageRecord>(payload, "items").map((page) => ({
+    ...page,
+    social_accounts: Array.isArray(page.social_accounts) ? page.social_accounts : [],
+    stats: page.stats || {
+      scheduled_posts: 0,
+      successful_posts: 0,
+      failed_posts: 0,
+    },
+  }));
+}
+
+function normalizePosts(payload: unknown): PostRecord[] {
+  return normalizeArray<PostRecord>(payload, "items").map((post) => ({
+    ...post,
+    media_paths: Array.isArray(post.media_paths) ? post.media_paths : [],
+    platforms: Array.isArray(post.platforms) ? post.platforms : [],
+    platform_ids: post.platform_ids || {},
+    platform_urls: post.platform_urls || {},
+    linkedin_manual: post.linkedin_manual || { required: false },
+  }));
+}
+
+function normalizeAnalyticsAccounts(payload: unknown): AnalyticsAccountRecord[] {
+  return normalizeArray<AnalyticsAccountRecord>(payload, "items").map((account) => ({
+    ...account,
+    last_refresh_run_id: account.last_refresh_run_id ?? null,
+    last_refresh_run_started_at: account.last_refresh_run_started_at ?? null,
+    insights: normalizeArray<SocialInsightRecord>(account.insights).map((insight) => ({
+      ...insight,
+      refresh_run_id: insight.refresh_run_id ?? null,
+      refresh_run_started_at: insight.refresh_run_started_at ?? null,
+    })),
+  }));
+}
+
+function normalizeAnalyticsPosts(payload: unknown): AnalyticsPostInsightRecord[] {
+  return normalizeArray<AnalyticsPostInsightRecord>(payload, "items").map((post) => ({
+    ...post,
+    page_name: post.page_name ?? null,
+    account_name: post.account_name ?? null,
+    thumbnail: post.thumbnail ?? null,
+    caption: post.caption || "",
+    platform_post_id: String(post.platform_post_id || ""),
+    published_at: post.published_at ?? null,
+    views: Number(post.views || 0),
+    reach: Number(post.reach || 0),
+    engagement: Number(post.engagement || 0),
+    comments: Number(post.comments || 0),
+    shares: Number(post.shares || 0),
+    permalink: post.permalink ?? null,
+    state: post.state || "No post insights yet",
+    metrics: post.metrics && typeof post.metrics === "object" ? post.metrics : {},
+  }));
+}
+
+function normalizeScheduler(payload: unknown): SchedulerStatus {
+  const scheduler = (payload && typeof payload === "object" ? payload : {}) as Partial<SchedulerStatus>;
+  return {
+    running: Boolean(scheduler.running),
+    scheduled_jobs: Number(scheduler.scheduled_jobs || 0),
+    jobs: normalizeArray(scheduler.jobs),
+    queued_posts: normalizeArray(scheduler.queued_posts),
+    posting_posts: normalizeArray(scheduler.posting_posts),
+  };
+}
+
+function normalizePlanningPage(payload: PlanningPagePayload): PlanningPagePayload {
+  return {
+    ...payload,
+    page: {
+      ...payload.page,
+      social_accounts: Array.isArray(payload.page?.social_accounts)
+        ? payload.page.social_accounts
+        : [],
+      stats: payload.page?.stats || {
+        scheduled_posts: 0,
+        successful_posts: 0,
+        failed_posts: 0,
+      },
+    },
+    rows: normalizeArray<PlanningRowRecord>(payload.rows),
+    month_options: normalizeArray(payload.month_options),
+    designer_options: normalizeArray(payload.designer_options),
+  };
 }
 
 export async function apiJson<T>(
@@ -387,7 +494,8 @@ export async function loadPosts(
   session: SessionPayload,
   onSessionUpdate: SessionUpdater,
 ): Promise<PostRecord[]> {
-  return apiJson<PostRecord[]>("/api/posts", session, onSessionUpdate);
+  const payload = await apiJson<unknown>("/api/posts", session, onSessionUpdate);
+  return normalizePosts(payload);
 }
 
 export async function deletePostRecord(
@@ -420,11 +528,42 @@ export async function updateLinkedInManualPost(
   );
 }
 
+export async function retryPostRecord(
+  session: SessionPayload,
+  onSessionUpdate: SessionUpdater,
+  postId: number,
+): Promise<{ message: string; post: PostRecord; results: Array<Record<string, unknown>> }> {
+  return apiJson<{ message: string; post: PostRecord; results: Array<Record<string, unknown>> }>(
+    `/api/posts/${postId}/retry`,
+    session,
+    onSessionUpdate,
+    { method: "POST" },
+  );
+}
+
+export async function reschedulePostRecord(
+  session: SessionPayload,
+  onSessionUpdate: SessionUpdater,
+  postId: number,
+  scheduledTime: string,
+): Promise<{ message: string; post: PostRecord }> {
+  return apiJson<{ message: string; post: PostRecord }>(
+    `/api/posts/${postId}/reschedule`,
+    session,
+    onSessionUpdate,
+    {
+      method: "POST",
+      body: JSON.stringify({ scheduled_time: scheduledTime }),
+    },
+  );
+}
+
 export async function loadPlanningSheets(
   session: SessionPayload,
   onSessionUpdate: SessionUpdater,
 ): Promise<PlanningSheetSummary[]> {
-  return apiJson<PlanningSheetSummary[]>("/api/planning/sheets", session, onSessionUpdate);
+  const payload = await apiJson<unknown>("/api/planning/sheets", session, onSessionUpdate);
+  return normalizeArray<PlanningSheetSummary>(payload);
 }
 
 export async function loadPlanningPage(
@@ -433,11 +572,12 @@ export async function loadPlanningPage(
   pageId: number,
   month: string,
 ): Promise<PlanningPagePayload> {
-  return apiJson<PlanningPagePayload>(
+  const payload = await apiJson<PlanningPagePayload>(
     `/api/pages/${pageId}/planning?month=${encodeURIComponent(month)}`,
     session,
     onSessionUpdate,
   );
+  return normalizePlanningPage(payload);
 }
 
 export async function createPlanningRow(
@@ -540,7 +680,7 @@ export async function loadIntegrationAccounts(
     session,
     onSessionUpdate,
   );
-  return Array.isArray(payload) ? payload : payload.accounts || [];
+  return normalizeArray<IntegrationAccount>(payload, "accounts");
 }
 
 export async function loadTokenStatuses(
@@ -552,7 +692,8 @@ export async function loadTokenStatuses(
     typeof pageId === "number"
       ? `/api/tokens/status?page_id=${pageId}`
       : "/api/tokens/status";
-  return apiJson<TokenStatusRow[]>(path, session, onSessionUpdate);
+  const payload = await apiJson<unknown>(path, session, onSessionUpdate);
+  return normalizeArray<TokenStatusRow>(payload);
 }
 
 export async function loadGlobalSettings(
@@ -666,7 +807,46 @@ export async function loadUsers(
   session: SessionPayload,
   onSessionUpdate: SessionUpdater,
 ): Promise<UserRecord[]> {
-  return apiJson<UserRecord[]>("/api/users", session, onSessionUpdate);
+  const payload = await apiJson<unknown>("/api/users", session, onSessionUpdate);
+  return normalizeArray<UserRecord>(payload);
+}
+
+export async function loadAnalyticsAccounts(
+  session: SessionPayload,
+  onSessionUpdate: SessionUpdater,
+  platform = "all",
+): Promise<AnalyticsAccountRecord[]> {
+  const payload = await apiJson<unknown>(
+    `/api/analytics/accounts?platform=${encodeURIComponent(platform)}`,
+    session,
+    onSessionUpdate,
+  );
+  return normalizeAnalyticsAccounts(payload);
+}
+
+export async function loadAnalyticsPosts(
+  session: SessionPayload,
+  onSessionUpdate: SessionUpdater,
+  limit = 50,
+): Promise<AnalyticsPostInsightRecord[]> {
+  const payload = await apiJson<unknown>(
+    `/api/analytics/posts?limit=${encodeURIComponent(String(limit))}`,
+    session,
+    onSessionUpdate,
+  );
+  return normalizeAnalyticsPosts(payload);
+}
+
+export async function refreshAnalytics(
+  session: SessionPayload,
+  onSessionUpdate: SessionUpdater,
+): Promise<Record<string, unknown>> {
+  return apiJson<Record<string, unknown>>(
+    "/api/analytics/refresh?force=true",
+    session,
+    onSessionUpdate,
+    { method: "POST" },
+  );
 }
 
 export async function createUserRecord(
@@ -737,7 +917,7 @@ export async function loadWorkspaceData(
     ),
   ]);
 
-  const [pagesPayload, planningSheets, scheduler, posts] = baseRequests;
+  const [pagesPayload, planningSheetsPayload, schedulerPayload, postsPayload] = baseRequests;
 
   let tokenStatuses: TokenStatusRow[] = [];
   let integrations: IntegrationAccount[] = [];
@@ -745,18 +925,20 @@ export async function loadWorkspaceData(
 
   if (session.user.role === "developer") {
     const developerRequests = await Promise.all([
-      authorizedJson<TokenStatusRow[]>("/api/tokens/status", session, onSessionUpdate),
-      authorizedJson<IntegrationAccount[]>("/api/integrations/check", session, onSessionUpdate),
+      authorizedJson<unknown>("/api/tokens/status", session, onSessionUpdate),
+      authorizedJson<unknown>("/api/integrations/check", session, onSessionUpdate),
       authorizedJson<SettingsSnapshot>("/api/settings", session, onSessionUpdate),
     ]);
-    [tokenStatuses, integrations, settings] = developerRequests;
+    tokenStatuses = normalizeArray<TokenStatusRow>(developerRequests[0]);
+    integrations = normalizeArray<IntegrationAccount>(developerRequests[1], "accounts");
+    settings = developerRequests[2];
   }
 
   return {
     pages: normalizePages(pagesPayload),
-    planningSheets,
-    scheduler,
-    posts,
+    planningSheets: normalizeArray<PlanningSheetSummary>(planningSheetsPayload),
+    scheduler: normalizeScheduler(schedulerPayload),
+    posts: normalizePosts(postsPayload),
     tokenStatuses,
     integrations,
     settings,

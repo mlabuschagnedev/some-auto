@@ -3,6 +3,7 @@ from __future__ import annotations
 from flask import Flask
 
 from .assets import bp as assets_bp
+from .analytics import bp as analytics_bp
 from .auth import bp as auth_bp
 from .diagnostics import bp as diagnostics_bp
 from .pages import bp as pages_bp
@@ -13,6 +14,7 @@ from .settings import bp as settings_bp
 
 BLUEPRINTS = (
     auth_bp,
+    analytics_bp,
     pages_bp,
     posts_bp,
     planning_bp,

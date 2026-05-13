@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from . import app as core
 from .media import *
@@ -10,8 +10,8 @@ Any = core.Any
 EMAIL_FROM = core.EMAIL_FROM
 EMAIL_TO = core.EMAIL_TO
 Path = core.Path
-PLANNING_Reviewer_REQUIRED_FIELDS = core.PLANNING_Reviewer_REQUIRED_FIELDS
-PLANNING_Reviewer_SENT_COLOR = core.PLANNING_Reviewer_SENT_COLOR
+PLANNING_CLARISE_REQUIRED_FIELDS = core.PLANNING_CLARISE_REQUIRED_FIELDS
+PLANNING_CLARISE_SENT_COLOR = core.PLANNING_CLARISE_SENT_COLOR
 PLANNING_CSV_IMPORT_FIELDS = [
     "job_nr",
     "date_value",
@@ -542,14 +542,14 @@ def planning_warning_recipients_for_designer(designer_name: str | None) -> list[
     return default_admin_warning_recipients() or EMAIL_TO
 
 
-def planning_warning_recipients_for_Reviewer() -> list[str]:
-    # Temporary routing: Reviewer/admin warnings go to configured EMAIL_TO, else active owner/admin emails.
+def planning_warning_recipients_for_clarise() -> list[str]:
+    # Temporary routing: Clarise/admin warnings go to configured EMAIL_TO, else active owner/admin emails.
     return EMAIL_TO or default_admin_warning_recipients()
 
 
-def planning_row_missing_Reviewer_fields(row: PlanningRow) -> list[str]:
+def planning_row_missing_clarise_fields(row: PlanningRow) -> list[str]:
     missing: list[str] = []
-    for field_name, label in PLANNING_Reviewer_REQUIRED_FIELDS.items():
+    for field_name, label in PLANNING_CLARISE_REQUIRED_FIELDS.items():
         value = getattr(row, field_name, None)
         if not str(value or "").strip():
             missing.append(label)
@@ -563,10 +563,10 @@ def clear_planning_warning_state(row: PlanningRow, warning_type: str) -> bool:
             row.designer_warning_key = None
             row.designer_warning_sent_at = None
             changed = True
-    elif warning_type == "Reviewer":
-        if row.Reviewer_warning_key or row.Reviewer_warning_sent_at:
-            row.Reviewer_warning_key = None
-            row.Reviewer_warning_sent_at = None
+    elif warning_type == "clarise":
+        if row.clarise_warning_key or row.clarise_warning_sent_at:
+            row.clarise_warning_key = None
+            row.clarise_warning_sent_at = None
             changed = True
     elif warning_type == "ready":
         if row.ready_warning_key or row.ready_warning_sent_at:
@@ -590,12 +590,12 @@ def send_due_planning_warning_emails(now: datetime) -> None:
         page = row.sheet.page if row.sheet else None
         if row.is_non_actionable:
             changed = clear_planning_warning_state(row, "designer") or changed
-            changed = clear_planning_warning_state(row, "Reviewer") or changed
+            changed = clear_planning_warning_state(row, "clarise") or changed
             changed = clear_planning_warning_state(row, "ready") or changed
             continue
         if page is None or not notifications_enabled_for_page(page.id):
             changed = clear_planning_warning_state(row, "designer") or changed
-            changed = clear_planning_warning_state(row, "Reviewer") or changed
+            changed = clear_planning_warning_state(row, "clarise") or changed
             changed = clear_planning_warning_state(row, "ready") or changed
             continue
 
@@ -613,7 +613,7 @@ def send_due_planning_warning_emails(now: datetime) -> None:
         ):
             ready_warning_key = scheduled_dt.isoformat()
             if row.ready_warning_key != ready_warning_key:
-                subject = f"[Sample SoMe-Auto] Critical warning | Job not green-ready | {page.name} | {job_ref}"
+                subject = f"[MSS SoME-Auto] Critical warning | Job not green-ready | {page.name} | {job_ref}"
                 problems = ["Job Nr is not marked green and ready to post."]
                 body = (
                     "Critical warning-2 hours before scheduled post. Job not ready.\n\n"
@@ -642,7 +642,7 @@ def send_due_planning_warning_emails(now: datetime) -> None:
                 if send_email_message(
                     subject,
                     body,
-                    planning_warning_recipients_for_Reviewer(),
+                    planning_warning_recipients_for_clarise(),
                     html_body=html_body,
                 ):
                     row.ready_warning_key = ready_warning_key
@@ -655,13 +655,13 @@ def send_due_planning_warning_emails(now: datetime) -> None:
         deadline_warning_key = deadline_date.isoformat() if deadline_date else None
         if not deadline_warning_due or not deadline_warning_key:
             changed = clear_planning_warning_state(row, "designer") or changed
-            changed = clear_planning_warning_state(row, "Reviewer") or changed
+            changed = clear_planning_warning_state(row, "clarise") or changed
             continue
 
-        missing_fields = planning_row_missing_Reviewer_fields(row)
+        missing_fields = planning_row_missing_clarise_fields(row)
         if missing_fields:
-            if row.Reviewer_warning_key != deadline_warning_key:
-                subject = f"[Sample SoMe-Auto] Planning row incomplete before deadline | {page.name} | {job_ref}"
+            if row.clarise_warning_key != deadline_warning_key:
+                subject = f"[MSS SoME-Auto] Planning row incomplete before deadline | {page.name} | {job_ref}"
                 problems = [f"{field} has not been set." for field in missing_fields]
                 body = (
                     "Warning-deadline approaching. Post incomplete.\n\n"
@@ -690,14 +690,14 @@ def send_due_planning_warning_emails(now: datetime) -> None:
                 if send_email_message(
                     subject,
                     body,
-                    planning_warning_recipients_for_Reviewer(),
+                    planning_warning_recipients_for_clarise(),
                     html_body=html_body,
                 ):
-                    row.Reviewer_warning_key = deadline_warning_key
-                    row.Reviewer_warning_sent_at = now
+                    row.clarise_warning_key = deadline_warning_key
+                    row.clarise_warning_sent_at = now
                     changed = True
         else:
-            changed = clear_planning_warning_state(row, "Reviewer") or changed
+            changed = clear_planning_warning_state(row, "clarise") or changed
 
         if not creative_items:
             designer_name = (row.designer or "").strip()
@@ -707,7 +707,7 @@ def send_due_planning_warning_emails(now: datetime) -> None:
             if row.designer_warning_key == deadline_warning_key:
                 continue
 
-            subject = f"[Sample SoMe-Auto] Creative missing before deadline for {designer_name} | {page.name} | {job_ref}"
+            subject = f"[MSS SoME-Auto] Creative missing before deadline for {designer_name} | {page.name} | {job_ref}"
             problems = ["Design is missing."]
             body = (
                 "Warning-deadline approaching. Design missing.\n\n"
@@ -846,4 +846,3 @@ def apply_planning_row_updates(row: PlanningRow, data: dict[str, Any]) -> None:
             row.planning_month = current_planning_month_key()
     elif not normalize_planning_month(row.planning_month):
         row.planning_month = effective_planning_month_for_row(row)
-
