@@ -372,14 +372,16 @@ export interface AnalyticsAccountRecord {
   last_refresh_run_id: string | null;
   last_refresh_run_started_at: string | null;
   last_error: string | null;
+  diagnostics?: SocialInsightRecord[];
   insight_count: number;
   insights: SocialInsightRecord[];
 }
 
 export interface AnalyticsPostInsightRecord {
-  id: number;
-  internal_post_id: number;
+  id: number | string;
+  internal_post_id: number | null;
   social_account_id: number;
+  page_id: number | null;
   page_name: string | null;
   account_name: string | null;
   thumbnail: string | null;
@@ -395,4 +397,18 @@ export interface AnalyticsPostInsightRecord {
   permalink: string | null;
   state: string;
   metrics: Record<string, number | null>;
+}
+
+export interface AnalyticsRefreshStatus {
+  id: string | null;
+  status: "idle" | "queued" | "running" | "finished" | "failed" | string;
+  message: string | null;
+  account_id: number | null;
+  started_at: string | null;
+  finished_at: string | null;
+  progress_current: number;
+  progress_total: number;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  accepted?: boolean;
 }

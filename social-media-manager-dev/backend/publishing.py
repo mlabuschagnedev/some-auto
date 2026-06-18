@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from . import app as core
 from .media import *
@@ -262,7 +262,7 @@ def exchange_long_lived_meta_user_token(access_token: str) -> tuple[str, int | N
         )
 
     response = requests.get(
-        "https://graph.facebook.com/v19.0/oauth/access_token",
+        "https://graph.facebook.com/v25.0/oauth/access_token",
         params={
             "grant_type": "fb_exchange_token",
             "client_id": app_id,
@@ -281,7 +281,7 @@ def exchange_long_lived_meta_user_token(access_token: str) -> tuple[str, int | N
 
 def resolve_facebook_page_access_token(seed_token: str, page_id: str) -> tuple[str, str | None]:
     response = requests.get(
-        f"https://graph.facebook.com/v19.0/{page_id}",
+        f"https://graph.facebook.com/v25.0/{page_id}",
         params={
             "fields": "id,name,access_token",
             "access_token": seed_token,
@@ -438,7 +438,7 @@ def fetch_instagram_permalink(account: SocialAccount, media_id: str | None) -> s
         return None
 
     response = requests.get(
-        f"https://graph.facebook.com/v19.0/{media_id}",
+        f"https://graph.facebook.com/v25.0/{media_id}",
         params={"fields": "permalink", "access_token": account.access_token},
         timeout=API_TIMEOUT_SECONDS,
     )
@@ -461,10 +461,10 @@ def upload_facebook_attached_media(
         raise RuntimeError(f"Media file not found: {media_path}")
 
     if is_video_path(str(media_path)):
-        endpoint = f"https://graph.facebook.com/v19.0/{target_id}/videos"
+        endpoint = f"https://graph.facebook.com/v25.0/{target_id}/videos"
         data = {"published": "false", "access_token": account.access_token}
     else:
-        endpoint = f"https://graph.facebook.com/v19.0/{target_id}/photos"
+        endpoint = f"https://graph.facebook.com/v25.0/{target_id}/photos"
         data = {"published": "false", "access_token": account.access_token}
 
     with media_path.open("rb") as media_file:
@@ -523,7 +523,7 @@ def schedule_facebook_feed_post(
         payload.update(facebook_attached_media_fields(attached_media_ids))
 
     response = requests.post(
-        f"https://graph.facebook.com/v19.0/{target_id}/feed",
+        f"https://graph.facebook.com/v25.0/{target_id}/feed",
         data=payload,
         timeout=API_TIMEOUT_SECONDS,
     )
@@ -548,7 +548,7 @@ def schedule_facebook_video_post(
 
     with media_path.open("rb") as media_file:
         response = requests.post(
-            f"https://graph.facebook.com/v19.0/{target_id}/videos",
+            f"https://graph.facebook.com/v25.0/{target_id}/videos",
             data={
                 "description": content,
                 "published": "false",
@@ -575,7 +575,7 @@ def schedule_facebook_remote_post(account: SocialAccount, post: Post, media_path
 
     target_id = account.page_id_external
     content = post.content or ""
-    resolved_media = [str(Path(path)) for path in media_paths]
+    resolved_media = normalize_media_for_publishing([str(Path(path)) for path in media_paths])
     video_count = sum(1 for item in resolved_media if is_video_path(item))
 
     if video_count > 1:
@@ -607,7 +607,7 @@ def schedule_facebook_remote_post(account: SocialAccount, post: Post, media_path
 
 def delete_facebook_remote_post(account: SocialAccount, remote_post_id: str) -> None:
     response = requests.delete(
-        f"https://graph.facebook.com/v19.0/{remote_post_id}",
+        f"https://graph.facebook.com/v25.0/{remote_post_id}",
         data={"access_token": account.access_token},
         timeout=API_TIMEOUT_SECONDS,
     )
@@ -623,7 +623,7 @@ def delete_facebook_remote_post(account: SocialAccount, remote_post_id: str) -> 
 
 def fetch_facebook_remote_post_state(account: SocialAccount, remote_post_id: str) -> dict[str, Any]:
     response = requests.get(
-        f"https://graph.facebook.com/v19.0/{remote_post_id}",
+        f"https://graph.facebook.com/v25.0/{remote_post_id}",
         params={
             "fields": "id,is_published,scheduled_publish_time,permalink_url,status_type,created_time",
             "access_token": account.access_token,
@@ -772,7 +772,7 @@ def publish_facebook_feed_post(
         data.update(facebook_attached_media_fields(attached_media_ids))
 
     response = requests.post(
-        f"https://graph.facebook.com/v19.0/{target_id}/feed",
+        f"https://graph.facebook.com/v25.0/{target_id}/feed",
         data=data,
         timeout=API_TIMEOUT_SECONDS,
     )
@@ -789,7 +789,7 @@ def publish_facebook_feed_post(
 def instagram_container_status(account: SocialAccount, container_id: str) -> str | None:
     def action() -> dict[str, Any]:
         response = requests.get(
-            f"https://graph.facebook.com/v19.0/{container_id}",
+            f"https://graph.facebook.com/v25.0/{container_id}",
             params={"fields": "status_code,status", "access_token": account.access_token},
             timeout=API_TIMEOUT_SECONDS,
         )
@@ -853,7 +853,7 @@ def create_instagram_media_container(
 
     def action() -> dict[str, Any]:
         response = requests.post(
-            f"https://graph.facebook.com/v19.0/{ig_user_id}/media",
+            f"https://graph.facebook.com/v25.0/{ig_user_id}/media",
             data=payload,
             timeout=API_TIMEOUT_SECONDS,
         )
@@ -968,7 +968,7 @@ def post_to_facebook_live(account: SocialAccount, post: Post, media_paths: list[
     target_id = account.page_id_external or "me"
     if target_id == "me":
         raise RuntimeError("Facebook page_id_external is required for page publishing.")
-    base_url = "https://graph.facebook.com/v19.0"
+    base_url = "https://graph.facebook.com/v25.0"
     content = post.content or ""
 
     if not media_paths:
@@ -1303,6 +1303,8 @@ def post_to_instagram_live(account: SocialAccount, post: Post, media_paths: list
     if not media_paths:
         raise RuntimeError("Instagram requires at least one media file.")
 
+    normalize_media_for_publishing(media_paths)
+
     invalid_images: list[str] = []
     for media_path in media_paths:
         details = instagram_ratio_details_for_path(media_path)
@@ -1367,7 +1369,7 @@ def post_to_instagram_live(account: SocialAccount, post: Post, media_paths: list
 
     def publish_action() -> dict[str, Any]:
         publish_response = requests.post(
-            f"https://graph.facebook.com/v19.0/{ig_user_id}/media_publish",
+            f"https://graph.facebook.com/v25.0/{ig_user_id}/media_publish",
             data={"creation_id": creation_id, "access_token": account.access_token},
             timeout=API_TIMEOUT_SECONDS,
         )
@@ -1804,6 +1806,7 @@ def execute_post(post_id: int) -> list[dict[str, Any]]:
         item if item.startswith(("http://", "https://")) else str(resolve_upload_path(item))
         for item in media_paths
     ]
+    normalize_media_for_publishing(resolved_media)
     live_posting_enabled = should_use_live_posting(page.id)
     logger.info(
         "Executing post %s for page=%s status=%s scheduled_time=%s platforms=%s live_posting=%s",

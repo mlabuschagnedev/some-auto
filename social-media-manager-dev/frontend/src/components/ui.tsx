@@ -248,7 +248,7 @@ export function SectionCard(props: {
 export function PageHeader(props: {
   eyebrow?: string;
   title: string;
-  description: string;
+  description?: string;
   actions?: ReactNode;
   meta?: ReactNode;
 }) {
@@ -257,7 +257,7 @@ export function PageHeader(props: {
       <div>
         {props.eyebrow ? <p className="eyebrow">{props.eyebrow}</p> : null}
         <h1>{props.title}</h1>
-        <p>{props.description}</p>
+        {props.description ? <p>{props.description}</p> : null}
         {props.meta ? <div className="page-meta">{props.meta}</div> : null}
       </div>
       {props.actions ? <div className="page-actions">{props.actions}</div> : null}
@@ -408,6 +408,7 @@ export function Modal(props: {
   children: ReactNode;
   footer?: ReactNode;
   onClose: () => void;
+  className?: string;
 }) {
   if (!props.open) {
     return null;
@@ -415,7 +416,7 @@ export function Modal(props: {
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section aria-modal="true" className="modal-panel" role="dialog">
+      <section aria-modal="true" className={`modal-panel${props.className ? ` ${props.className}` : ""}`} role="dialog">
         <div className="modal-header">
           <div>
             <h2>{props.title}</h2>

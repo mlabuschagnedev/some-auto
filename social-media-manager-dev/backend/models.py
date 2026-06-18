@@ -385,6 +385,32 @@ class AccountInsightSnapshot(db.Model):
         }
 
 
+class InstagramFollowerSnapshot(db.Model):
+    __tablename__ = "instagram_follower_snapshots"
+
+    id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(db.Integer, db.ForeignKey("social_account.id"), nullable=False, index=True)
+    ig_user_id = db.Column(db.String(100), nullable=False, index=True)
+    username = db.Column(db.String(160), nullable=True, index=True)
+    followers_count = db.Column(db.Integer, nullable=False)
+    captured_at = db.Column(db.DateTime, default=utcnow, nullable=False, index=True)
+
+    account = db.relationship(
+        "SocialAccount",
+        backref=db.backref("instagram_follower_snapshots", lazy=True, cascade="all, delete-orphan"),
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "account_id": self.account_id,
+            "ig_user_id": self.ig_user_id,
+            "username": self.username,
+            "followers_count": self.followers_count,
+            "captured_at": self.captured_at.isoformat(),
+        }
+
+
 class PlatformPostReference(db.Model):
     __table_args__ = (
         UniqueConstraint(

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from ..auth import require_roles
+from ..auth import current_user, designer_label_for_user
 from ..models import Page, PlanningRow, PlanningSheet, db
 from ..planning import (
     apply_planning_row_updates,
     build_linked_accounts_text,
     build_planning_month_options,
     current_planning_month_key,
+    effective_planning_month_for_row,
     ensure_planning_sheet_for_page,
     import_planning_csvs_from_inbox,
     next_planning_row_order,
@@ -33,6 +34,121 @@ from ..routes.common import (
     jwt_required,
     request,
 )
+
+PLANNING_ADMIN_ROLES = {"developer", "admin"}
+DESIGNER_ROW_UPDATE_FIELDS = {"final_creative", "mss_notes"}
+LOCKED_LINKED_POST_FIELDS = {
+    "planning_month",
+    "linked_accounts",
+    "job_nr",
+    "job_color",
+    "date_value",
+    "time_value",
+    "theme",
+    "post_copy",
+    "link",
+    "format",
+    "final_creative",
+    "deadline",
+    "designer",
+}
+
+
+def _planning_actor() -> Any:
+    user = current_user()
+    if not user:
+        raise PermissionError("User not found.")
+    return user
+
+
+def _planning_actor_is_admin() -> bool:
+    return _planning_actor().role in PLANNING_ADMIN_ROLES
+
+
+def _planning_payload_fields(data: dict[str, Any]) -> set[str]:
+    editable_fields = {
+        "planning_month",
+        "linked_accounts",
+        "job_nr",
+        "job_color",
+        "date_value",
+        "time_value",
+        "theme",
+        "post_copy",
+        "link",
+        "format",
+        "final_creative",
+        "deadline",
+        "mss_notes",
+        "designer",
+        "row_order",
+        "is_non_actionable",
+    }
+    return {key for key in data.keys() if key in editable_fields}
+
+
+def _planning_row_is_assigned_to_actor(row: PlanningRow, actor: Any | None = None) -> bool:
+    actor = actor or _planning_actor()
+    if actor.role != "designer":
+        return False
+    designer_name = str(row.designer or "").strip().casefold()
+    if not designer_name:
+        return False
+    return designer_name == designer_label_for_user(actor).casefold()
+
+
+def _require_planning_admin() -> None:
+    if not _planning_actor_is_admin():
+        raise PermissionError("Only admins and developers can manage planning rows.")
+
+
+def _require_planning_month_editable(row: PlanningRow) -> None:
+    if planning_month_is_past(effective_planning_month_for_row(row)):
+        raise RuntimeError("Past planning months are view-only.")
+
+
+def _require_planning_row_update_allowed(row: PlanningRow, data: dict[str, Any]) -> None:
+    _require_planning_month_editable(row)
+    actor = _planning_actor()
+    fields = _planning_payload_fields(data)
+    if actor.role in PLANNING_ADMIN_ROLES:
+        locked_fields = LOCKED_LINKED_POST_FIELDS & fields if row.scheduled_post_id else set()
+        if locked_fields:
+            locked_text = ", ".join(sorted(locked_fields))
+            raise RuntimeError(
+                f"This row is already linked to post #{row.scheduled_post_id}; "
+                f"locked fields cannot be changed: {locked_text}."
+            )
+        return
+
+    if actor.role == "designer":
+        if not _planning_row_is_assigned_to_actor(row, actor):
+            raise PermissionError("Designers can only update planning rows assigned to them.")
+        unsupported = fields - DESIGNER_ROW_UPDATE_FIELDS
+        if unsupported:
+            raise PermissionError("Designers can only update Final Creative and MSS Notes on assigned rows.")
+        if row.scheduled_post_id and "final_creative" in fields:
+            raise RuntimeError(
+                f"This row is already linked to post #{row.scheduled_post_id}; final creative text is locked."
+            )
+        return
+
+    raise PermissionError("Forbidden.")
+
+
+def _require_planning_creative_allowed(row: PlanningRow) -> None:
+    _require_planning_month_editable(row)
+    if row.scheduled_post_id:
+        raise RuntimeError(
+            f"This row is already linked to post #{row.scheduled_post_id}; creative media is locked."
+        )
+    actor = _planning_actor()
+    if actor.role in PLANNING_ADMIN_ROLES:
+        return
+    if actor.role == "designer" and _planning_row_is_assigned_to_actor(row, actor):
+        return
+    raise PermissionError("Designers can only manage creative media on rows assigned to them.")
+
 
 def get_planning_sheets() -> Any:
     pages = Page.query.options(joinedload(Page.social_accounts)).order_by(Page.created_at.desc()).all()
@@ -103,11 +219,19 @@ def get_planning_for_page(page_id: int) -> Any:
     )
 
 def create_planning_row(page_id: int) -> Any:
+    try:
+        _require_planning_admin()
+    except PermissionError as error:
+        return jsonify({"error": str(error)}), 403
+
     page = Page.query.options(joinedload(Page.social_accounts)).get_or_404(page_id)
     sheet = ensure_planning_sheet_for_page(page.id)
     data = get_json_body()
     if not isinstance(data, dict):
         data = {}
+    else:
+        data = dict(data)
+        data.pop("job_color", None)
     selected_month = normalize_planning_month(data.get("planning_month")) or current_planning_month_key()
     raw_non_actionable = data.get("is_non_actionable", False)
     is_non_actionable = raw_non_actionable if isinstance(raw_non_actionable, bool) else str(raw_non_actionable).strip().lower() in {"1", "true", "yes", "on"}
@@ -138,6 +262,13 @@ def update_planning_row(row_id: int) -> Any:
     data = get_json_body()
     if not isinstance(data, dict):
         return jsonify({"error": "Invalid planning row payload."}), 400
+
+    try:
+        _require_planning_row_update_allowed(row, data)
+    except PermissionError as error:
+        return jsonify({"error": str(error)}), 403
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 400
 
     try:
         apply_planning_row_updates(row, data)
@@ -173,6 +304,12 @@ def bulk_update_planning_rows() -> Any:
         if not isinstance(fields, dict):
             return jsonify({"error": f"fields must be an object for row id {row.id}."}), 400
         try:
+            _require_planning_row_update_allowed(row, fields)
+        except PermissionError as error:
+            return jsonify({"error": f"Row {row.id}: {error}"}), 403
+        except RuntimeError as error:
+            return jsonify({"error": f"Row {row.id}: {error}"}), 400
+        try:
             apply_planning_row_updates(row, fields)
         except (RuntimeError, ValueError) as error:
             return jsonify({"error": f"Row {row.id}: {error}"}), 400
@@ -193,6 +330,13 @@ def upload_planning_creative(row_id: int) -> Any:
     page = row.sheet.page if row.sheet else None
     if page is None:
         return jsonify({"error": "Planning row is not linked to a page."}), 400
+    try:
+        _require_planning_creative_allowed(row)
+    except PermissionError as error:
+        return jsonify({"error": str(error)}), 403
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 400
+
     current_media = row.creative_media_list()
     previous_media = set(current_media)
     media_items = list(current_media)
@@ -278,9 +422,14 @@ def upload_planning_creative(row_id: int) -> Any:
     return jsonify(row.to_dict())
 
 def schedule_from_planning_row(row_id: int) -> Any:
+    try:
+        _require_planning_admin()
+    except PermissionError as error:
+        return jsonify({"error": str(error)}), 403
+
     row = PlanningRow.query.options(joinedload(PlanningRow.sheet).joinedload(PlanningSheet.page)).get_or_404(row_id)
     try:
-        row, post = schedule_post_from_planning_row_record(row, require_ready_color=True, trigger="manual")
+        row, post = schedule_post_from_planning_row_record(row, require_ready_color=False, trigger="manual")
     except RuntimeError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -293,9 +442,14 @@ def schedule_from_planning_row(row_id: int) -> Any:
     )
 
 def publish_from_planning_row(row_id: int) -> Any:
+    try:
+        _require_planning_admin()
+    except PermissionError as error:
+        return jsonify({"error": str(error)}), 403
+
     row = PlanningRow.query.options(joinedload(PlanningRow.sheet).joinedload(PlanningSheet.page)).get_or_404(row_id)
     try:
-        row, post, results = publish_post_from_planning_row_record(row, require_ready_color=True)
+        row, post, results = publish_post_from_planning_row_record(row, require_ready_color=False)
     except RuntimeError as error:
         return jsonify({"error": str(error)}), 400
 

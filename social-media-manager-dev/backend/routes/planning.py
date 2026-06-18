@@ -18,6 +18,7 @@ def get_planning_for_page(page_id: int) -> Any:
 
 @bp.route("/api/pages/<int:page_id>/planning/rows", methods=["POST"])
 @jwt_required()
+@require_roles("developer", "admin")
 def create_planning_row(page_id: int) -> Any:
     return service.create_planning_row(page_id)
 
@@ -44,11 +45,13 @@ def upload_planning_creative(row_id: int) -> Any:
 
 @bp.route("/api/planning/rows/<int:row_id>/schedule", methods=["POST"])
 @jwt_required()
+@require_roles("developer", "admin")
 def schedule_from_planning_row(row_id: int) -> Any:
     return service.schedule_from_planning_row(row_id)
 
 @bp.route("/api/planning/rows/<int:row_id>/publish", methods=["POST"])
 @jwt_required()
+@require_roles("developer", "admin")
 def publish_from_planning_row(row_id: int) -> Any:
     return service.publish_from_planning_row(row_id)
 

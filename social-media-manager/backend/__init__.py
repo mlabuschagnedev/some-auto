@@ -1,2 +1,1 @@
-﻿# Sample SoMe-Auto backend package marker.
-
+# MSS SoME-Auto backend package marker.

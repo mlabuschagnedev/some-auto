@@ -61,8 +61,28 @@ def get_analytics_raw() -> Any:
     return service.get_analytics_raw()
 
 
+@bp.route("/api/analytics/export-report.xlsx", methods=["GET"])
+@jwt_required()
+def export_marketing_report_workbook() -> Any:
+    return service.export_marketing_report_workbook()
+
+
+@bp.route("/api/analytics/export-report", methods=["POST"])
+@jwt_required()
+@require_roles("developer", "admin")
+def sync_marketing_report_google_sheet() -> Any:
+    return service.sync_marketing_report_google_sheet()
+
+
 @bp.route("/api/analytics/refresh", methods=["POST"])
 @jwt_required()
 @require_roles("developer", "admin")
 def refresh_analytics() -> Any:
     return service.refresh_analytics()
+
+
+@bp.route("/api/analytics/refresh/status", methods=["GET"])
+@jwt_required()
+@require_roles("developer", "admin")
+def get_analytics_refresh_status() -> Any:
+    return service.get_analytics_refresh_status()

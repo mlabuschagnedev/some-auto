@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   ApiError,
   clearStoredSession,
@@ -16,16 +16,19 @@ import {
   loadWorkspaceData,
   loginWithPassword,
   logoutSession,
+  publishPlanningRow,
   readStoredSession,
   refreshAnalytics,
   restoreStoredSession,
   reschedulePostRecord,
   retryPostRecord,
   schedulePlanningRow,
+  syncAnalyticsReportSheet,
   testSocialAccount,
   updateGlobalSettings,
   updateLinkedInManualPost,
   updatePlanningRow,
+  uploadPlanningCreativeMedia,
   writeStoredSession,
 } from "./api";
 import {
@@ -48,6 +51,7 @@ import type {
   GlobalSettingsPayload,
   AnalyticsAccountRecord,
   AnalyticsPostInsightRecord,
+  AnalyticsRefreshStatus,
   PageRecord,
   PlanningPagePayload,
   PlanningRowRecord,
@@ -71,10 +75,54 @@ type SectionId =
 
 type ModalId = "campaign" | "post" | "invite" | "account" | "preferences" | null;
 type CalendarMode = "month" | "week";
-type ThemeMode = "light" | "dark";
+type ThemeMode = "light" | "dark" | "dark-gold";
 type ThemePreference = "system" | ThemeMode;
-type AnalyticsRange = "7d" | "30d" | "month" | "all" | "custom";
+type AnalyticsRange = "7d" | "30d" | "60d" | "month" | "all" | "custom";
 type InsightDisplayMode = "chart" | "bar" | "table" | "summary" | "export";
+type AnalyticsPostSort =
+  | "date-desc"
+  | "date-asc"
+  | "views-desc"
+  | "views-asc"
+  | "reach-desc"
+  | "reach-asc"
+  | "engagement-desc"
+  | "engagement-asc"
+  | "comments-desc"
+  | "comments-asc"
+  | "shares-desc"
+  | "shares-asc";
+type AnalyticsAccountSort =
+  | "views-desc"
+  | "views-asc"
+  | "engagement-desc"
+  | "engagement-asc"
+  | "followers-desc"
+  | "followers-asc"
+  | "name-asc"
+  | "name-desc";
+type DiagnosticSort = "checked-desc" | "checked-asc" | "account-asc" | "metric-asc" | "state-asc";
+type ProjectSort =
+  | "name-asc"
+  | "name-desc"
+  | "queued-desc"
+  | "queued-asc"
+  | "posted-desc"
+  | "posted-asc"
+  | "failed-desc"
+  | "failed-asc"
+  | "accounts-desc"
+  | "accounts-asc";
+type ProjectAccountSort = "page-asc" | "page-desc" | "account-asc" | "account-desc" | "platform-asc" | "platform-desc" | "active-first" | "inactive-first";
+type PlannerEventSort = "date-asc" | "date-desc" | "page-asc" | "page-desc" | "status-asc" | "status-desc";
+type DraftSort = "order-asc" | "order-desc" | "updated-desc" | "updated-asc" | "title-asc" | "title-desc" | "status-asc" | "status-desc";
+type ActivitySort = "date-desc" | "date-asc" | "title-asc" | "title-desc" | "source-asc" | "source-desc";
+type NotificationSort = "priority-desc" | "priority-asc" | "source-asc" | "title-asc";
+
+interface SortOption<T extends string> {
+  value: T;
+  label: string;
+}
 
 interface NavItem {
   id: SectionId;
@@ -102,7 +150,8 @@ interface ComparisonPoint {
 
 interface AnalyticsPostRow {
   id: string;
-  post: PostRecord;
+  post: PostRecord | null;
+  pageId: number | null;
   platform: string;
   platformPostId: string | null;
   permalink: string | null;
@@ -145,6 +194,125 @@ interface NotificationItem {
 
 const LOGO_SRC = "/mss-logo.png";
 const READY_COLOR = "#34A853";
+const INSTAGRAM_FEED_RATIO_MIN = 4 / 5;
+const INSTAGRAM_FEED_RATIO_MAX = 1.91;
+const INSTAGRAM_RATIO_EPSILON = 0.01;
+const COMPOSER_PREVIEW_MAX_EDGE = 960;
+const COMPOSER_CROP_MAX_EDGE = 1440;
+
+interface ComposerMediaItem {
+  id: string;
+  file: File;
+  previewUrl: string | null;
+  kind: "image" | "video";
+  width: number | null;
+  height: number | null;
+  ratio: number | null;
+  cropNeeded: boolean;
+  processing: boolean;
+  error: string | null;
+}
+
+interface CropConfig {
+  targetRatio: number;
+  offsetX: number;
+  offsetY: number;
+  zoom: number;
+}
+
+const ANALYTICS_POST_SORT_OPTIONS: SortOption<AnalyticsPostSort>[] = [
+  { value: "date-desc", label: "Newest first" },
+  { value: "date-asc", label: "Oldest first" },
+  { value: "views-desc", label: "Most views" },
+  { value: "views-asc", label: "Least views" },
+  { value: "reach-desc", label: "Most reach" },
+  { value: "reach-asc", label: "Least reach" },
+  { value: "engagement-desc", label: "Most interactions" },
+  { value: "engagement-asc", label: "Least interactions" },
+  { value: "comments-desc", label: "Most comments" },
+  { value: "comments-asc", label: "Least comments" },
+  { value: "shares-desc", label: "Most shares" },
+  { value: "shares-asc", label: "Least shares" },
+];
+
+const ANALYTICS_ACCOUNT_SORT_OPTIONS: SortOption<AnalyticsAccountSort>[] = [
+  { value: "views-desc", label: "Most views" },
+  { value: "views-asc", label: "Least views" },
+  { value: "engagement-desc", label: "Most interactions" },
+  { value: "engagement-asc", label: "Least interactions" },
+  { value: "followers-desc", label: "Most followers" },
+  { value: "followers-asc", label: "Least followers" },
+  { value: "name-asc", label: "Name A-Z" },
+  { value: "name-desc", label: "Name Z-A" },
+];
+
+const DIAGNOSTIC_SORT_OPTIONS: SortOption<DiagnosticSort>[] = [
+  { value: "checked-desc", label: "Newest checked" },
+  { value: "checked-asc", label: "Oldest checked" },
+  { value: "account-asc", label: "Account A-Z" },
+  { value: "metric-asc", label: "Metric A-Z" },
+  { value: "state-asc", label: "State" },
+];
+
+const PROJECT_SORT_OPTIONS: SortOption<ProjectSort>[] = [
+  { value: "name-asc", label: "Name A-Z" },
+  { value: "name-desc", label: "Name Z-A" },
+  { value: "queued-desc", label: "Most queued" },
+  { value: "queued-asc", label: "Least queued" },
+  { value: "posted-desc", label: "Most posted" },
+  { value: "posted-asc", label: "Least posted" },
+  { value: "failed-desc", label: "Most failed" },
+  { value: "failed-asc", label: "Least failed" },
+  { value: "accounts-desc", label: "Most accounts" },
+  { value: "accounts-asc", label: "Least accounts" },
+];
+
+const PROJECT_ACCOUNT_SORT_OPTIONS: SortOption<ProjectAccountSort>[] = [
+  { value: "page-asc", label: "Page A-Z" },
+  { value: "page-desc", label: "Page Z-A" },
+  { value: "account-asc", label: "Account A-Z" },
+  { value: "account-desc", label: "Account Z-A" },
+  { value: "platform-asc", label: "Platform A-Z" },
+  { value: "platform-desc", label: "Platform Z-A" },
+  { value: "active-first", label: "Active first" },
+  { value: "inactive-first", label: "Inactive first" },
+];
+
+const PLANNER_EVENT_SORT_OPTIONS: SortOption<PlannerEventSort>[] = [
+  { value: "date-asc", label: "Earliest first" },
+  { value: "date-desc", label: "Latest first" },
+  { value: "page-asc", label: "Client A-Z" },
+  { value: "page-desc", label: "Client Z-A" },
+  { value: "status-asc", label: "Status A-Z" },
+  { value: "status-desc", label: "Status Z-A" },
+];
+
+const DRAFT_SORT_OPTIONS: SortOption<DraftSort>[] = [
+  { value: "order-asc", label: "Draft order" },
+  { value: "order-desc", label: "Reverse order" },
+  { value: "updated-desc", label: "Newest updated" },
+  { value: "updated-asc", label: "Oldest updated" },
+  { value: "title-asc", label: "Title A-Z" },
+  { value: "title-desc", label: "Title Z-A" },
+  { value: "status-asc", label: "Status A-Z" },
+  { value: "status-desc", label: "Status Z-A" },
+];
+
+const ACTIVITY_SORT_OPTIONS: SortOption<ActivitySort>[] = [
+  { value: "date-desc", label: "Newest first" },
+  { value: "date-asc", label: "Oldest first" },
+  { value: "title-asc", label: "Title A-Z" },
+  { value: "title-desc", label: "Title Z-A" },
+  { value: "source-asc", label: "Source A-Z" },
+  { value: "source-desc", label: "Source Z-A" },
+];
+
+const NOTIFICATION_SORT_OPTIONS: SortOption<NotificationSort>[] = [
+  { value: "priority-desc", label: "Highest priority" },
+  { value: "priority-asc", label: "Lowest priority" },
+  { value: "source-asc", label: "Source A-Z" },
+  { value: "title-asc", label: "Title A-Z" },
+];
 
 const NAV_ITEMS: NavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard", description: "Command center" },
@@ -174,10 +342,30 @@ function resolveThemePreference(preference: ThemePreference): ThemeMode {
 
 function readInitialThemePreference(): ThemePreference {
   const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
-  if (saved === "system" || saved === "light" || saved === "dark") {
+  if (saved === "system" || saved === "light" || saved === "dark" || saved === "dark-gold") {
     return saved;
   }
   return "system";
+}
+
+function nextThemePreference(theme: ThemeMode): ThemeMode {
+  if (theme === "light") {
+    return "dark";
+  }
+  if (theme === "dark") {
+    return "dark-gold";
+  }
+  return "light";
+}
+
+function themeToggleLabel(theme: ThemeMode): string {
+  if (theme === "light") {
+    return "Switch to dark mode";
+  }
+  if (theme === "dark") {
+    return "Switch to dark gold mode";
+  }
+  return "Switch to light mode";
 }
 
 function todayMonthKey(): string {
@@ -231,6 +419,42 @@ function formatDateOnly(value: string | null | undefined): string {
   }).format(date);
 }
 
+function dateSortValue(value: string | null | undefined): number {
+  if (!value) {
+    return 0;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function numberSortValue(value: number | null | undefined): number {
+  const numberValue = Number(value ?? 0);
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function compareNumbers(
+  left: number | null | undefined,
+  right: number | null | undefined,
+  descending = false,
+): number {
+  const result = numberSortValue(left) - numberSortValue(right);
+  return descending ? -result : result;
+}
+
+function compareDates(
+  left: string | null | undefined,
+  right: string | null | undefined,
+  descending = false,
+): number {
+  const result = dateSortValue(left) - dateSortValue(right);
+  return descending ? -result : result;
+}
+
+function compareText(left: string | null | undefined, right: string | null | undefined, descending = false): number {
+  const result = String(left || "").localeCompare(String(right || ""), undefined, { sensitivity: "base", numeric: true });
+  return descending ? -result : result;
+}
+
 function parseRowDate(row: PlanningRowRecord): string | null {
   const raw = row.date_value.trim();
   if (!raw) {
@@ -250,18 +474,18 @@ function rowStatus(row: PlanningRowRecord, readyColor = READY_COLOR): {
   label: string;
   tone: "neutral" | "good" | "warn" | "bad" | "info";
 } {
+  void readyColor;
   if (row.is_non_actionable) {
     return { label: "Disabled", tone: "neutral" };
   }
   if (row.scheduled_post_id) {
     return { label: "Scheduled", tone: "good" };
   }
-  if ((row.job_color || "").toUpperCase() === readyColor.toUpperCase()) {
-    return { label: "Ready", tone: "good" };
+  if (!row.theme.trim() || !row.post_copy.trim()) {
+    return { label: "Needs copy", tone: "warn" };
   }
-  const missingCore = !row.theme.trim() || !row.post_copy.trim() || !row.date_value.trim();
-  if (missingCore) {
-    return { label: "Needs content", tone: "warn" };
+  if (!row.creative_media_count) {
+    return { label: "Needs media", tone: "warn" };
   }
   return { label: "Draft", tone: "info" };
 }
@@ -282,14 +506,24 @@ function postTone(status: string): "neutral" | "good" | "warn" | "bad" | "info" 
   return "neutral";
 }
 
+function isPublishingQueueEvent(event: PlannerEvent, todayKey = toDateKey(new Date())): boolean {
+  return event.source === "post"
+    && event.dateKey >= todayKey
+    && ["draft", "scheduled", "posting", "manual_pending"].includes(event.status);
+}
+
+function isUpcomingPlannerEvent(event: PlannerEvent, todayKey = toDateKey(new Date())): boolean {
+  return event.dateKey >= todayKey && event.status !== "posted" && event.status !== "failed";
+}
+
 function pageImageUrl(page: PageRecord | null | undefined): string | null {
   if (!page?.image_path) {
     return null;
   }
   if (page.image_path.startsWith("http") || page.image_path.startsWith("/")) {
-    return page.image_path;
+    return normalizeMediaSrc(page.image_path);
   }
-  return `/uploads/${page.image_path}`;
+  return localUploadUrl(page.image_path);
 }
 
 function firstPostMedia(post: PostRecord): string | null {
@@ -298,9 +532,212 @@ function firstPostMedia(post: PostRecord): string | null {
     return null;
   }
   if (path.startsWith("http") || path.startsWith("/")) {
-    return path;
+    return normalizeMediaSrc(path);
   }
-  return `/uploads/${path}`;
+  return localUploadUrl(path);
+}
+
+function firstPlanningRowMedia(row: PlanningRowRecord): string | null {
+  const candidate = [
+    ...(row.creative_media_urls || []),
+    row.creative_media_url,
+    ...(row.creative_media_paths || []),
+    row.creative_media_path,
+  ].find((value) => typeof value === "string" && value.trim());
+  if (!candidate) {
+    return null;
+  }
+  return normalizeMediaSrc(candidate);
+}
+
+function localUploadUrl(path: string): string {
+  const cleaned = path.replace(/\\/g, "/").replace(/^\/?uploads\//, "").replace(/^\/+/, "");
+  return `/uploads/${cleaned.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function normalizeMediaSrc(src: string): string {
+  if (!src) {
+    return src;
+  }
+  if (src.startsWith("/uploads/")) {
+    return localUploadUrl(src);
+  }
+  if (!src.startsWith("http") && !src.startsWith("/") && /^(images|videos)\//i.test(src)) {
+    return localUploadUrl(src);
+  }
+  return src;
+}
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 MB";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function imageRatioAccepted(width: number | null, height: number | null): boolean {
+  if (!width || !height) {
+    return true;
+  }
+  const ratio = width / height;
+  return ratio >= INSTAGRAM_FEED_RATIO_MIN - INSTAGRAM_RATIO_EPSILON
+    && ratio <= INSTAGRAM_FEED_RATIO_MAX + INSTAGRAM_RATIO_EPSILON;
+}
+
+function recommendedCropRatio(width: number | null, height: number | null): number {
+  if (!width || !height) {
+    return 1;
+  }
+  const ratio = width / height;
+  if (ratio < INSTAGRAM_FEED_RATIO_MIN) {
+    return INSTAGRAM_FEED_RATIO_MIN;
+  }
+  if (ratio > INSTAGRAM_FEED_RATIO_MAX) {
+    return INSTAGRAM_FEED_RATIO_MAX;
+  }
+  return Math.min(Math.max(ratio, INSTAGRAM_FEED_RATIO_MIN), INSTAGRAM_FEED_RATIO_MAX);
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, type = "image/jpeg", quality = 0.92): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error("Could not create image file from crop."));
+      }
+    }, type, quality);
+  });
+}
+
+async function previewUrlFromBitmap(bitmap: ImageBitmap): Promise<string> {
+  const scale = Math.min(1, COMPOSER_PREVIEW_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas is not available for image previews.");
+  }
+  context.drawImage(bitmap, 0, 0, width, height);
+  const blob = await canvasToBlob(canvas, "image/jpeg", 0.84);
+  return URL.createObjectURL(blob);
+}
+
+async function prepareComposerMediaItem(file: File, id: string): Promise<ComposerMediaItem> {
+  if (!file.type.startsWith("image/")) {
+    return {
+      id,
+      file,
+      previewUrl: URL.createObjectURL(file),
+      kind: "video",
+      width: null,
+      height: null,
+      ratio: null,
+      cropNeeded: false,
+      processing: false,
+      error: null,
+    };
+  }
+
+  const bitmap = await createImageBitmap(file);
+  try {
+    const width = bitmap.width;
+    const height = bitmap.height;
+    return {
+      id,
+      file,
+      previewUrl: await previewUrlFromBitmap(bitmap),
+      kind: "image",
+      width,
+      height,
+      ratio: width / height,
+      cropNeeded: !imageRatioAccepted(width, height),
+      processing: false,
+      error: null,
+    };
+  } finally {
+    bitmap.close();
+  }
+}
+
+function croppedFileName(name: string): string {
+  const cleaned = name.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "-").replace(/-+/g, "-");
+  return `${cleaned || "image"}-cropped.jpg`;
+}
+
+async function cropComposerMediaItem(item: ComposerMediaItem, config: CropConfig): Promise<ComposerMediaItem> {
+  if (item.kind !== "image") {
+    return item;
+  }
+  const bitmap = await createImageBitmap(item.file);
+  try {
+    const sourceWidth = bitmap.width;
+    const sourceHeight = bitmap.height;
+    const boundedRatio = Math.min(Math.max(config.targetRatio, INSTAGRAM_FEED_RATIO_MIN), INSTAGRAM_FEED_RATIO_MAX);
+    const sourceRatio = sourceWidth / sourceHeight;
+    let baseWidth = sourceWidth;
+    let baseHeight = sourceHeight;
+    if (sourceRatio > boundedRatio) {
+      baseWidth = sourceHeight * boundedRatio;
+    } else {
+      baseHeight = sourceWidth / boundedRatio;
+    }
+
+    const zoom = Math.min(Math.max(config.zoom, 1), 3);
+    const cropWidth = Math.max(1, baseWidth / zoom);
+    const cropHeight = Math.max(1, baseHeight / zoom);
+    const cropX = Math.max(0, (sourceWidth - cropWidth) * (config.offsetX / 100));
+    const cropY = Math.max(0, (sourceHeight - cropHeight) * (config.offsetY / 100));
+    const outputWidth = Math.min(COMPOSER_CROP_MAX_EDGE, Math.round(cropWidth));
+    const outputHeight = Math.max(1, Math.round(outputWidth / boundedRatio));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Canvas is not available for cropping.");
+    }
+    context.drawImage(bitmap, cropX, cropY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
+    const blob = await canvasToBlob(canvas, "image/jpeg", 0.92);
+    const file = new File([blob], croppedFileName(item.file.name), {
+      type: "image/jpeg",
+      lastModified: Date.now(),
+    });
+    const nextBitmap = await createImageBitmap(file);
+    try {
+      const previousPreview = item.previewUrl;
+      const previewUrl = await previewUrlFromBitmap(nextBitmap);
+      if (previousPreview) {
+        URL.revokeObjectURL(previousPreview);
+      }
+      return {
+        ...item,
+        file,
+        previewUrl,
+        width: nextBitmap.width,
+        height: nextBitmap.height,
+        ratio: nextBitmap.width / nextBitmap.height,
+        cropNeeded: false,
+        processing: false,
+        error: null,
+      };
+    } finally {
+      nextBitmap.close();
+    }
+  } finally {
+    bitmap.close();
+  }
 }
 
 function matchesQuery(values: Array<string | null | undefined>, query: string): boolean {
@@ -350,6 +787,130 @@ function buildPlatformChart(workspace: WorkspaceData | null): ChartItem[] {
     .map(([label, value]) => ({ label, value, tone: "info" }));
 }
 
+function plannerEventDateTime(event: PlannerEvent): number {
+  const time = /^\d{1,2}:\d{2}/.test(event.time) ? event.time : "00:00";
+  return dateSortValue(`${event.dateKey}T${time}`);
+}
+
+function sortPlannerEvents(events: PlannerEvent[], sort: PlannerEventSort): PlannerEvent[] {
+  return events.slice().sort((left, right) => {
+    if (sort === "date-desc" || sort === "date-asc") {
+      const result = plannerEventDateTime(left) - plannerEventDateTime(right);
+      return sort === "date-desc" ? -result : result;
+    }
+    if (sort === "page-desc" || sort === "page-asc") {
+      return compareText(left.pageName, right.pageName, sort === "page-desc")
+        || compareText(left.title, right.title);
+    }
+    return compareText(left.status, right.status, sort === "status-desc")
+      || compareText(left.title, right.title);
+  });
+}
+
+function sortDraftRows(rows: PlanningRowRecord[], sort: DraftSort, readyColor: string): PlanningRowRecord[] {
+  return rows.slice().sort((left, right) => {
+    if (sort === "order-desc" || sort === "order-asc") {
+      return compareNumbers(left.row_order, right.row_order, sort === "order-desc");
+    }
+    if (sort === "updated-desc" || sort === "updated-asc") {
+      return compareDates(left.updated_at, right.updated_at, sort === "updated-desc")
+        || compareNumbers(left.row_order, right.row_order);
+    }
+    if (sort === "title-desc" || sort === "title-asc") {
+      return compareText(left.theme || left.job_nr, right.theme || right.job_nr, sort === "title-desc");
+    }
+    return compareText(
+      rowStatus(left, readyColor).label,
+      rowStatus(right, readyColor).label,
+      sort === "status-desc",
+    ) || compareNumbers(left.row_order, right.row_order);
+  });
+}
+
+function sortPages(pages: PageRecord[], sort: ProjectSort): PageRecord[] {
+  return pages.slice().sort((left, right) => {
+    if (sort === "name-desc" || sort === "name-asc") {
+      return compareText(left.name, right.name, sort === "name-desc");
+    }
+    if (sort === "queued-desc" || sort === "queued-asc") {
+      return compareNumbers(left.stats.scheduled_posts, right.stats.scheduled_posts, sort === "queued-desc")
+        || compareText(left.name, right.name);
+    }
+    if (sort === "posted-desc" || sort === "posted-asc") {
+      return compareNumbers(left.stats.successful_posts, right.stats.successful_posts, sort === "posted-desc")
+        || compareText(left.name, right.name);
+    }
+    if (sort === "failed-desc" || sort === "failed-asc") {
+      return compareNumbers(left.stats.failed_posts, right.stats.failed_posts, sort === "failed-desc")
+        || compareText(left.name, right.name);
+    }
+    return compareNumbers(left.social_accounts.length, right.social_accounts.length, sort === "accounts-desc")
+      || compareText(left.name, right.name);
+  });
+}
+
+function sortProjectAccounts(
+  rows: Array<{ page: PageRecord; account: SocialAccount }>,
+  sort: ProjectAccountSort,
+): Array<{ page: PageRecord; account: SocialAccount }> {
+  return rows.slice().sort((left, right) => {
+    if (sort === "page-desc" || sort === "page-asc") {
+      return compareText(left.page.name, right.page.name, sort === "page-desc");
+    }
+    if (sort === "account-desc" || sort === "account-asc") {
+      return compareText(left.account.account_name || left.account.platform, right.account.account_name || right.account.platform, sort === "account-desc");
+    }
+    if (sort === "platform-desc" || sort === "platform-asc") {
+      return compareText(left.account.platform, right.account.platform, sort === "platform-desc")
+        || compareText(left.page.name, right.page.name);
+    }
+    return compareNumbers(
+      left.account.is_active ? 1 : 0,
+      right.account.is_active ? 1 : 0,
+      sort === "active-first",
+    ) || compareText(left.page.name, right.page.name);
+  });
+}
+
+function sortActivityEntries<T extends { title: string; actor: string; sortAt: number }>(items: T[], sort: ActivitySort): T[] {
+  return items.slice().sort((left, right) => {
+    if (sort === "date-desc" || sort === "date-asc") {
+      return compareNumbers(left.sortAt, right.sortAt, sort === "date-desc");
+    }
+    if (sort === "title-desc" || sort === "title-asc") {
+      return compareText(left.title, right.title, sort === "title-desc");
+    }
+    return compareText(left.actor, right.actor, sort === "source-desc")
+      || compareNumbers(left.sortAt, right.sortAt, true);
+  });
+}
+
+function notificationPriorityRank(priority: NotificationItem["priority"]): number {
+  if (priority === "High") {
+    return 3;
+  }
+  if (priority === "Medium") {
+    return 2;
+  }
+  return 1;
+}
+
+function sortNotifications(items: NotificationItem[], sort: NotificationSort): NotificationItem[] {
+  return items.slice().sort((left, right) => {
+    if (sort === "priority-desc" || sort === "priority-asc") {
+      return compareNumbers(
+        notificationPriorityRank(left.priority),
+        notificationPriorityRank(right.priority),
+        sort === "priority-desc",
+      ) || compareText(left.title, right.title);
+    }
+    if (sort === "source-asc") {
+      return compareText(left.source, right.source) || compareText(left.title, right.title);
+    }
+    return compareText(left.title, right.title);
+  });
+}
+
 function buildPlannerEvents(
   planning: PlanningPagePayload | null,
   posts: PostRecord[],
@@ -369,13 +930,13 @@ function buildPlannerEvents(
           source: "planning" as const,
           dateKey,
           time: row.time_value || "Any time",
-          title: row.theme || row.job_nr || "Untitled planner row",
-          subtitle: row.post_copy || row.format || "Planning row",
+          title: row.theme || row.job_nr || "Untitled post",
+          subtitle: row.post_copy || row.format || "Draft post",
           pageName: planning.page.name,
           platforms: row.linked_accounts.split(/\s+/).filter(Boolean),
           status: status.label,
           tone: status.tone,
-          mediaUrl: row.creative_media_url,
+          mediaUrl: firstPlanningRowMedia(row),
           row,
         };
       })
@@ -491,8 +1052,8 @@ function deriveNotifications(
   if (contentRows.length) {
     items.push({
       id: "planning-content",
-      title: `${contentRows.length} planner row${contentRows.length === 1 ? "" : "s"} need content`,
-      detail: "Rows missing content, date, or readiness need attention.",
+      title: `${contentRows.length} draft${contentRows.length === 1 ? "" : "s"} need content`,
+      detail: "Missing content, date, or readiness.",
       priority: "Medium",
       source: "planner",
       tone: "warn",
@@ -539,6 +1100,7 @@ export default function App() {
   );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [modal, setModal] = useState<ModalId>(null);
+  const [manualPost, setManualPost] = useState<PostRecord | null>(null);
   const [toast, setToast] = useState<{ text: string; tone: "success" | "error" } | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<number | null>(null);
   const [selectedMonth, setSelectedMonth] = useState(todayMonthKey());
@@ -585,12 +1147,17 @@ export default function App() {
     }, 3500);
   }
 
-  async function refreshWorkspace(currentSession = session): Promise<void> {
+  async function refreshWorkspace(
+    currentSession = session,
+    options: { silent?: boolean } = {},
+  ): Promise<void> {
     if (!currentSession) {
       return;
     }
-    setWorkspaceLoading(true);
-    setWorkspaceError(null);
+    if (!options.silent) {
+      setWorkspaceLoading(true);
+      setWorkspaceError(null);
+    }
     try {
       const nextWorkspace = await loadWorkspaceData(currentSession, applySession);
       setWorkspace(nextWorkspace);
@@ -604,9 +1171,16 @@ export default function App() {
       if (error instanceof ApiError && error.status === 401) {
         applySession(null);
       }
-      setWorkspaceError(error instanceof Error ? error.message : "Unable to load workspace data.");
+      const message = error instanceof Error ? error.message : "Unable to load workspace data.";
+      if (options.silent) {
+        notify(message, "error");
+      } else {
+        setWorkspaceError(message);
+      }
     } finally {
-      setWorkspaceLoading(false);
+      if (!options.silent) {
+        setWorkspaceLoading(false);
+      }
     }
   }
 
@@ -642,8 +1216,9 @@ export default function App() {
     }
   }
 
-  async function refreshAnalyticsAccounts(): Promise<void> {
-    if (!session) {
+  async function refreshAnalyticsAccounts(sessionOverride?: SessionPayload): Promise<void> {
+    const currentSession = sessionOverride || session;
+    if (!currentSession) {
       setAnalyticsAccounts([]);
       setAnalyticsPosts([]);
       return;
@@ -651,8 +1226,8 @@ export default function App() {
     setAnalyticsLoading(true);
     try {
       const [accounts, posts] = await Promise.all([
-        loadAnalyticsAccounts(session, applySession),
-        loadAnalyticsPosts(session, applySession, 75),
+        loadAnalyticsAccounts(currentSession, applySession),
+        loadAnalyticsPosts(currentSession, applySession, 2000, 3650),
       ]);
       setAnalyticsAccounts(accounts);
       setAnalyticsPosts(posts);
@@ -735,6 +1310,36 @@ export default function App() {
   }, [session?.accessToken, selectedPageId, selectedMonth]);
 
   useEffect(() => {
+    if (!session) {
+      return;
+    }
+    let lastRefreshAt = 0;
+    const refreshActiveData = () => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastRefreshAt < 15000) {
+        return;
+      }
+      lastRefreshAt = now;
+      void refreshWorkspace(session, { silent: true });
+      if (selectedPageId) {
+        void refreshPlanning();
+      }
+      if (activeSection === "analytics") {
+        void refreshAnalyticsAccounts(session);
+      }
+    };
+    window.addEventListener("focus", refreshActiveData);
+    document.addEventListener("visibilitychange", refreshActiveData);
+    return () => {
+      window.removeEventListener("focus", refreshActiveData);
+      document.removeEventListener("visibilitychange", refreshActiveData);
+    };
+  }, [activeSection, selectedPageId, selectedMonth, session?.accessToken]);
+
+  useEffect(() => {
     if (activeSection === "settings" || modal === "invite" || modal === "preferences") {
       void refreshSettings();
     }
@@ -806,6 +1411,20 @@ export default function App() {
   function openSection(section: SectionId): void {
     setActiveSection(section);
     setMobileNavOpen(false);
+    if (!session) {
+      return;
+    }
+    if (section === "analytics") {
+      void refreshAnalyticsAccounts(session);
+      return;
+    }
+    void refreshWorkspace(session, { silent: true });
+    if (section === "planner") {
+      void refreshPlanning();
+    }
+    if (section === "settings") {
+      void refreshSettings();
+    }
   }
 
   async function reschedulePlannerItem(event: PlannerEvent, dateKey: string): Promise<void> {
@@ -973,9 +1592,9 @@ export default function App() {
             </Button>
             <IconButton
               className="theme-toggle"
-              icon={theme === "dark" ? "sun" : "moon"}
-              label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              onClick={() => setThemePreference(theme === "dark" ? "light" : "dark")}
+              icon={theme === "light" ? "moon" : "sun"}
+              label={themeToggleLabel(theme)}
+              onClick={() => setThemePreference(nextThemePreference(theme))}
             />
             <button
               aria-label={`${unreadCount} active notifications`}
@@ -1055,6 +1674,7 @@ export default function App() {
             <PlannerPage
               calendarAnchor={calendarAnchor}
               calendarMode={calendarMode}
+              canManagePlanning={session.user.role !== "designer"}
               draggingEventId={draggingEventId}
               events={plannerEvents}
               loading={plannerLoading}
@@ -1092,14 +1712,13 @@ export default function App() {
                     deadline: row.deadline,
                     mss_notes: row.mss_notes,
                     designer: row.designer,
-                    job_color: row.job_color,
                     is_non_actionable: row.is_non_actionable,
                   });
-                  notify("Planner row duplicated.");
+                  notify("Post draft duplicated.");
                   await refreshWorkspace();
                   await refreshPlanning();
                 } catch (error) {
-                  notify(error instanceof Error ? error.message : "Unable to duplicate row.", "error");
+                  notify(error instanceof Error ? error.message : "Unable to duplicate draft.", "error");
                 }
               }}
               onEventDragEnd={() => setDraggingEventId(null)}
@@ -1125,20 +1744,38 @@ export default function App() {
                 setCalendarAnchor(`${next}-01`);
               }}
               onPageChange={setSelectedPageId}
-              onSchedule={async (row) => {
+              onManualOpen={(post) => setManualPost(post)}
+              onPublishRow={async (row) => {
                 try {
-                  const result = await schedulePlanningRow(session, applySession, row.id);
-                  notify(result.message || "Planning row scheduled.");
+                  const result = await publishPlanningRow(session, applySession, row.id);
+                  notify(result.message || "Publishing finished.");
+                  if (result.post?.linkedin_manual.required && !result.post.linkedin_manual.done) {
+                    setManualPost(result.post);
+                  }
                   await refreshWorkspace();
                   await refreshPlanning();
                 } catch (error) {
-                  notify(error instanceof Error ? error.message : "Unable to schedule row.", "error");
+                  notify(error instanceof Error ? error.message : "Unable to publish post.", "error");
+                }
+              }}
+              onSchedule={async (row) => {
+                try {
+                  const result = await schedulePlanningRow(session, applySession, row.id);
+                  notify(result.message || "Post scheduled.");
+                  if (result.post?.linkedin_manual.required && !result.post.linkedin_manual.done) {
+                    setManualPost(result.post);
+                  }
+                  await refreshWorkspace();
+                  await refreshPlanning();
+                } catch (error) {
+                  notify(error instanceof Error ? error.message : "Unable to schedule post.", "error");
                 }
               }}
               onManualComplete={async (post) => {
                 try {
-                  await updateLinkedInManualPost(session, applySession, post.id, { done: true });
+                  const updated = await updateLinkedInManualPost(session, applySession, post.id, { done: true });
                   notify("Manual LinkedIn item marked complete.");
+                  setManualPost(updated.linkedin_manual.required && !updated.linkedin_manual.done ? updated : null);
                   await refreshWorkspace();
                   await refreshPlanning();
                 } catch (error) {
@@ -1177,14 +1814,53 @@ export default function App() {
               accounts={analyticsAccounts}
               analyticsPosts={analyticsPosts}
               loading={analyticsLoading}
-              onRefreshInsights={async () => {
+              onExportReport={async () => {
+                if (!session) {
+                  throw new Error("Sign in again before exporting the report.");
+                }
+                const activeSession = readStoredSession() || session;
+                const result = await syncAnalyticsReportSheet(activeSession, applySession);
+                const cellCount = Number(result.updated_cells || result.prepared_cells || 0);
+                notify(cellCount ? `Google marketing report updated (${cellCount} cells).` : "Google marketing report updated.");
+              }}
+              onRefreshInsights={async (
+                accountId?: number,
+                onProgress?: (status: AnalyticsRefreshStatus) => void,
+                options?: { range: AnalyticsRange; customStart?: string; customEnd?: string },
+              ) => {
                 try {
-                  await refreshAnalytics(session, applySession);
-                  notify("Analytics refresh requested.");
-                  await refreshAnalyticsAccounts();
+                  if (!session) {
+                    throw new Error("Sign in again before refreshing analytics.");
+                  }
+                  const activeSession = readStoredSession() || session;
+                  const result = await refreshAnalytics(activeSession, applySession, accountId, onProgress, options);
+                  const latestSession = readStoredSession() || activeSession;
+                  await refreshAnalyticsAccounts(latestSession);
+                  await refreshWorkspace(latestSession, { silent: true });
+                  const refreshed = Number(result.refreshed || (result.status === "refreshed" || result.status === "partial" ? 1 : 0));
+                  const failed = Number(result.failed || (result.status === "failed" ? 1 : 0));
+                  const metricErrors = Number(result.metric_errors || 0);
+                  notify(
+                    accountId
+                      ? `Account refresh finished: ${result.status || "done"}${metricErrors ? `, ${metricErrors} metric warnings` : ""}.`
+                      : `Analytics refresh finished: ${refreshed} refreshed, ${failed} failed.`,
+                    failed ? "error" : "success",
+                  );
                 } catch (error) {
                   notify(error instanceof Error ? error.message : "Unable to refresh analytics.", "error");
+                  throw error;
                 }
+              }}
+              onReloadData={async () => {
+                if (!session) {
+                  throw new Error("Sign in again before reloading analytics data.");
+                }
+                const activeSession = readStoredSession() || session;
+                await Promise.all([
+                  refreshAnalyticsAccounts(activeSession),
+                  refreshWorkspace(activeSession, { silent: true }),
+                ]);
+                notify("Analytics data reloaded from the database.");
               }}
               platformChart={platformChart}
               query={query}
@@ -1275,23 +1951,47 @@ export default function App() {
         defaultMonth={selectedMonth}
         designerOptions={planning?.designer_options || []}
         onClose={() => setModal(null)}
-        onSubmit={async (payload) => {
+        onSubmit={async (payload, mediaFiles) => {
           if (!selectedPageId) {
             notify("Select a page first.", "error");
             return;
           }
           try {
-            await createPlanningRow(session, applySession, selectedPageId, payload);
-            notify("Planner row created.");
+            const draft = await createPlanningRow(session, applySession, selectedPageId, payload);
+            if (mediaFiles.length) {
+              const formData = new FormData();
+              const pendingOrder = mediaFiles.map((_, index) => `pending::${index}`);
+              formData.append("pending_order", JSON.stringify(pendingOrder));
+              formData.append("media_order", JSON.stringify(pendingOrder));
+              mediaFiles.forEach((file) => formData.append("creative", file));
+              await uploadPlanningCreativeMedia(session, applySession, draft.id, formData);
+            }
+            notify("Post draft created.");
             setModal(null);
             await refreshWorkspace();
             await refreshPlanning();
           } catch (error) {
-            notify(error instanceof Error ? error.message : "Unable to create planner row.", "error");
+            notify(error instanceof Error ? error.message : "Unable to create post draft.", "error");
           }
         }}
         open={modal === "post"}
         page={selectedPage}
+      />
+      <LinkedInManualModal
+        onClose={() => setManualPost(null)}
+        onComplete={async (post) => {
+          try {
+            const updated = await updateLinkedInManualPost(session, applySession, post.id, { done: true });
+            notify("Manual LinkedIn item marked complete.");
+            setManualPost(updated.linkedin_manual.required && !updated.linkedin_manual.done ? updated : null);
+            await refreshWorkspace();
+            await refreshPlanning();
+          } catch (error) {
+            notify(error instanceof Error ? error.message : "Unable to mark manual item complete.", "error");
+          }
+        }}
+        open={Boolean(manualPost)}
+        post={manualPost}
       />
       <ConnectAccountModal
         onClose={() => setModal(null)}
@@ -1419,7 +2119,7 @@ function AuthScreen(props: {
           <img alt="MSS logo" className="auth-logo" src={LOGO_SRC} />
           <p className="eyebrow">MSS Social Media Manager</p>
           <h1>Sign in to your workspace</h1>
-          <p>Live pages, planner rows, publishing queue, account health, and settings load through the API after sign-in.</p>
+          <p>Live pages, posts, publishing queue, account health, and settings load through the API after sign-in.</p>
         </div>
         <form
           className="auth-form"
@@ -1445,6 +2145,57 @@ function AuthScreen(props: {
   );
 }
 
+function SectionTabs<T extends string>(props: {
+  value: T;
+  items: Array<{ value: T; label: string; detail?: string; count?: number }>;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="section-tabs" role="tablist">
+      {props.items.map((item) => (
+        <button
+          aria-selected={props.value === item.value}
+          className={props.value === item.value ? "section-tab section-tab-active" : "section-tab"}
+          key={item.value}
+          onClick={() => props.onChange(item.value)}
+          role="tab"
+          type="button"
+        >
+          <span>
+            <strong>{item.label}</strong>
+            {item.detail ? <small>{item.detail}</small> : null}
+          </span>
+          {typeof item.count === "number" ? <Badge tone={item.count ? "info" : "neutral"}>{item.count}</Badge> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SortControl<T extends string>(props: {
+  value: T;
+  options: SortOption<T>[];
+  onChange: (value: T) => void;
+  label?: string;
+}) {
+  return (
+    <label className="sort-control">
+      <span>{props.label || "Sort"}</span>
+      <select
+        aria-label={props.label || "Sort"}
+        onChange={(event) => props.onChange(event.target.value as T)}
+        value={props.value}
+      >
+        {props.options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function DashboardPage(props: {
   workspace: WorkspaceData;
   plannerEvents: PlannerEvent[];
@@ -1456,17 +2207,22 @@ function DashboardPage(props: {
   onRefresh: () => void;
   onSectionOpen: (section: SectionId) => void;
 }) {
+  const [view, setView] = useState<"today" | "queue" | "notifications">("today");
   const totalAccounts = props.workspace.pages.reduce((count, page) => count + page.social_accounts.length, 0);
   const queuedPosts = props.workspace.posts.filter((post) =>
     ["draft", "scheduled", "posting", "manual_pending"].includes(post.status),
   );
   const failedPosts = props.workspace.posts.filter((post) => post.status === "failed");
-  const visibleEvents = props.plannerEvents
-    .filter((event) =>
-      matchesQuery([event.title, event.pageName, event.platforms.join(" "), event.status], props.query),
-    )
-    .slice(0, 5);
-  const nextEvent = visibleEvents[0];
+  const todayKey = toDateKey(new Date());
+  const matchingEvents = props.plannerEvents.filter((event) =>
+    matchesQuery([event.title, event.pageName, event.platforms.join(" "), event.status], props.query),
+  );
+  const upcomingEvents = matchingEvents.filter((event) => isUpcomingPlannerEvent(event, todayKey));
+  const futureQueueEvents = matchingEvents.filter((event) => isPublishingQueueEvent(event, todayKey));
+  const visibleQueueEvents = futureQueueEvents.slice(0, 8);
+  const nextEvent = upcomingEvents[0] || futureQueueEvents[0] || null;
+  const priority = props.notifications[0] || null;
+  const health = workspaceHealth(props.workspace);
 
   return (
     <div className="page-stack">
@@ -1474,129 +2230,175 @@ function DashboardPage(props: {
         actions={
           <>
             <Button icon="plus" onClick={() => props.onOpenModal("post")} variant="primary">
-              New planner row
+              Create post
             </Button>
             <Button icon="refresh" onClick={props.onRefresh}>
               Refresh
             </Button>
           </>
         }
-        description="Schedule health, approvals, blockers, and recent movement from the live API."
         eyebrow="Command center"
         meta={
           <>
-            <Badge tone={workspaceHealth(props.workspace) >= 80 ? "good" : "warn"}>
-              {workspaceHealth(props.workspace)}% healthy
-            </Badge>
-            <Badge tone={props.notifications.length ? "bad" : "good"}>
-              {props.notifications.length || 0} active alerts
-            </Badge>
-            <Badge tone="info">{visibleEvents.length} visible calendar items</Badge>
+            <Badge tone={health >= 80 ? "good" : "warn"}>{health}% healthy</Badge>
+            <Badge tone={props.notifications.length ? "bad" : "good"}>{props.notifications.length} alerts</Badge>
+            <Badge tone="info">{futureQueueEvents.length} queued</Badge>
           </>
         }
         title="Dashboard"
       />
 
-      <Card className="ops-summary-card">
-        <div className="ops-summary">
-          <div>
-            <p className="eyebrow">Today at a glance</p>
-            <h2>
-              {props.notifications.length
-                ? `${props.notifications.length} item${props.notifications.length === 1 ? "" : "s"} need attention`
-                : "Publishing workspace is clear"}
-            </h2>
-            <p>
-              {nextEvent
-                ? `Next: ${nextEvent.time} ${nextEvent.title} on ${nextEvent.pageName}.`
-                : "No upcoming calendar item is visible in the current view."}
-            </p>
-          </div>
-          <div className="ops-summary-metrics">
-            <span>
-              <strong>{failedPosts.length}</strong>
-              <small>Failed</small>
-            </span>
-            <span>
-              <strong>{queuedPosts.length}</strong>
-              <small>In motion</small>
-            </span>
-            <span>
-              <strong>{props.workspace.scheduler.running ? "On" : "Off"}</strong>
-              <small>Scheduler</small>
-            </span>
-          </div>
-          <Button onClick={() => props.onSectionOpen(failedPosts.length ? "notifications" : "planner")} variant="primary">
-            {failedPosts.length ? "Recover failures" : "Open planner"}
-          </Button>
-        </div>
-      </Card>
+      <SectionTabs
+        items={[
+          { value: "today", label: "Today at a glance" },
+          { value: "queue", label: "Queue", count: futureQueueEvents.length },
+          { value: "notifications", label: "Notifications", count: props.notifications.length },
+        ]}
+        onChange={setView}
+        value={view}
+      />
 
-      <section className="stats-grid" aria-label="Workspace metrics">
-        <StatCard helper="Client pages saved in the database" label="Managed pages" value={String(props.workspace.pages.length)} />
-        <StatCard helper="Connected social media accounts" label="Accounts" value={String(totalAccounts)} />
-        <StatCard helper="Draft, scheduled, posting, or manual pending" label="Posts in motion" value={String(queuedPosts.length)} />
-        <StatCard
-          helper="Scheduler jobs registered by the backend"
-          label="Scheduler"
-          tone={props.workspace.scheduler.running ? "good" : "bad"}
-          trend={props.workspace.scheduler.running ? "Running" : "Stopped"}
-          value={String(props.workspace.scheduler.scheduled_jobs)}
-        />
-      </section>
-
-      <div className="dashboard-grid">
-        <Card
-          actions={<Button onClick={() => props.onSectionOpen("notifications")} variant="ghost">Open inbox</Button>}
-          description="The items most likely to block today's work."
-          title="Needs attention"
-        >
-          <div className="attention-list">
-            {props.notifications.length ? (
-              props.notifications.slice(0, 4).map((item) => (
-                <article className="attention-item" key={item.id}>
-                  <Badge tone={item.tone}>{item.priority}</Badge>
-                  <p>{item.title}. {item.detail}</p>
-                  <Button onClick={() => props.onSectionOpen(item.source)} variant="ghost">
+      {view === "today" ? (
+        <>
+          <section className="dashboard-cockpit">
+            <div className="dashboard-command-panel">
+              <div>
+                <p className="eyebrow">Today</p>
+                <h2>
+                  {props.notifications.length
+                    ? `${props.notifications.length} item${props.notifications.length === 1 ? "" : "s"} need attention`
+                    : "Workspace clear"}
+                </h2>
+                {nextEvent ? <p>Next: {nextEvent.time} · {nextEvent.title} · {nextEvent.pageName}</p> : null}
+              </div>
+              <div className="cockpit-actions">
+                <Button onClick={() => props.onSectionOpen(failedPosts.length ? "notifications" : "planner")} variant="primary">
+                  {failedPosts.length ? "Recover failures" : "Open planner"}
+                </Button>
+                <Button onClick={() => props.onSectionOpen("analytics")}>View reports</Button>
+              </div>
+              <div className="ops-summary-metrics">
+                <span>
+                  <strong>{failedPosts.length}</strong>
+                  <small>Failed</small>
+                </span>
+                <span>
+                  <strong>{futureQueueEvents.length}</strong>
+                  <small>Queued</small>
+                </span>
+                <span>
+                  <strong>{props.workspace.scheduler.running ? "On" : "Off"}</strong>
+                  <small>Scheduler</small>
+                </span>
+              </div>
+            </div>
+            <aside className="dashboard-priority-panel">
+              <p className="eyebrow">Priority</p>
+              {priority ? (
+                <>
+                  <Badge tone={priority.tone}>{priority.priority}</Badge>
+                  <h3>{priority.title}</h3>
+                  <Button onClick={() => props.onSectionOpen(priority.source)} variant="ghost">
                     Review
                   </Button>
-                </article>
-              ))
-            ) : (
-              <EmptyState
-                description="No failed posts, token warnings, or blocked integrations are active right now."
-                title="No urgent blockers"
-              />
-            )}
-          </div>
-        </Card>
+                </>
+              ) : (
+                <>
+                  <Badge tone="good">Clear</Badge>
+                  <h3>No blockers active</h3>
+                  <Button onClick={() => props.onSectionOpen("planner")} variant="ghost">
+                    Open planner
+                  </Button>
+                </>
+              )}
+            </aside>
+          </section>
 
+          <section className="stats-grid" aria-label="Workspace metrics">
+            <StatCard helper="Pages" label="Managed pages" value={String(props.workspace.pages.length)} />
+            <StatCard helper="Connected" label="Accounts" value={String(totalAccounts)} />
+            <StatCard helper="Drafts and scheduled" label="Posts in motion" value={String(queuedPosts.length)} />
+            <StatCard
+              helper="Jobs"
+              label="Scheduler"
+              tone={props.workspace.scheduler.running ? "good" : "bad"}
+              trend={props.workspace.scheduler.running ? "Running" : "Stopped"}
+              value={String(props.workspace.scheduler.scheduled_jobs)}
+            />
+          </section>
+        </>
+      ) : null}
+
+      {view === "queue" ? (
         <Card
-          actions={<Button onClick={() => props.onSectionOpen("planner")} variant="ghost">Open calendar</Button>}
-          description="Upcoming planner rows and scheduled posts."
+          actions={<Button onClick={() => props.onSectionOpen("planner")} variant="ghost">Open planner</Button>}
           title="Publishing queue"
         >
-          <div className="queue-list">
-            {visibleEvents.length ? (
-              visibleEvents.map((event) => <PlannerEventRow event={event} key={event.id} />)
+          <div className="queue-list queue-list-wide">
+            {visibleQueueEvents.length ? (
+              visibleQueueEvents.map((event) => <PlannerEventRow event={event} key={event.id} />)
             ) : (
-              <EmptyState
-                description="No queue items match the current search."
-                title="No matching queue items"
-              />
+              <EmptyState description="No future posts are queued." title="Queue clear" />
             )}
           </div>
         </Card>
-      </div>
+      ) : null}
 
-      <div className="split-grid">
-        <Card description="Database-backed post state split by status." title="Post status">
-          <BarChart items={props.statusChart} />
-        </Card>
-        <Card description="Publishing footprint across connected and scheduled platforms." title="Platform coverage">
-          <BarChart items={props.platformChart} />
-        </Card>
-      </div>
+      {view === "notifications" ? (
+        <>
+          <div className="dashboard-workbench">
+            <Card
+              actions={<Button onClick={() => props.onSectionOpen("notifications")} variant="ghost">Open inbox</Button>}
+              title="Needs attention"
+            >
+              <div className="attention-list">
+                {props.notifications.length ? (
+                  props.notifications.slice(0, 5).map((item) => (
+                    <article className="attention-item" key={item.id}>
+                      <Badge tone={item.tone}>{item.priority}</Badge>
+                      <p>{item.title}</p>
+                      <Button onClick={() => props.onSectionOpen(item.source)} variant="ghost">
+                        Review
+                      </Button>
+                    </article>
+                  ))
+                ) : (
+                  <EmptyState description="No active alerts." title="Inbox clear" />
+                )}
+              </div>
+            </Card>
+            <Card title="General status">
+              <div className="detail-list">
+                <div>
+                  <span>Health</span>
+                  <strong>{health}%</strong>
+                </div>
+                <div>
+                  <span>Failed posts</span>
+                  <strong>{failedPosts.length}</strong>
+                </div>
+                <div>
+                  <span>Queued posts</span>
+                  <strong>{futureQueueEvents.length}</strong>
+                </div>
+                <div>
+                  <span>Scheduler</span>
+                  <strong>{props.workspace.scheduler.running ? "Running" : "Stopped"}</strong>
+                </div>
+              </div>
+            </Card>
+          </div>
+
+          <div className="split-grid">
+            <Card title="Post status">
+              <BarChart items={props.statusChart} />
+            </Card>
+            <Card title="Platform coverage">
+              <BarChart items={props.platformChart} />
+            </Card>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -1620,7 +2422,22 @@ function ProjectsPage(props: {
       props.query,
     ),
   );
-  const selected = props.selectedPage || pages[0] || null;
+  const [view, setView] = useState<"clients" | "accounts" | "publishing">("clients");
+  const [clientSort, setClientSort] = useState<ProjectSort>("name-asc");
+  const [accountSort, setAccountSort] = useState<ProjectAccountSort>("page-asc");
+  const [publishingSort, setPublishingSort] = useState<ProjectSort>("queued-desc");
+  const sortedPages = sortPages(pages, clientSort);
+  const publishingPages = sortPages(pages, publishingSort);
+  const selected = props.selectedPage && pages.some((page) => page.id === props.selectedPage?.id)
+    ? props.selectedPage
+    : sortedPages[0] || null;
+  const connectedAccountCount = pages.reduce((count, page) => count + page.social_accounts.length, 0);
+  const queuedPagePosts = pages.reduce((count, page) => count + page.stats.scheduled_posts, 0);
+  const failedPagePosts = pages.reduce((count, page) => count + page.stats.failed_posts, 0);
+  const accountRows = pages.flatMap((page) =>
+    page.social_accounts.map((account) => ({ page, account })),
+  );
+  const sortedAccountRows = sortProjectAccounts(accountRows, accountSort);
 
   return (
     <div className="page-stack">
@@ -1633,7 +2450,6 @@ function ProjectsPage(props: {
             </Button>
           </>
         }
-        description="Live pages, connected accounts, saved page images, and publishing readiness."
         eyebrow="Workspace structure"
         meta={
           <>
@@ -1644,10 +2460,45 @@ function ProjectsPage(props: {
         title="Projects"
       />
 
-      <div className="projects-layout">
+      <SectionTabs
+        items={[
+          { value: "clients", label: "Clients", count: pages.length },
+          { value: "accounts", label: "Accounts", count: sortedAccountRows.length },
+          { value: "publishing", label: "Publishing", count: queuedPagePosts + failedPagePosts },
+        ]}
+        onChange={setView}
+        value={view}
+      />
+
+      {view === "clients" ? (
+        <>
+          <section className="project-overview-strip" aria-label="Project overview">
+            <div>
+              <span>Visible pages</span>
+              <strong>{pages.length}</strong>
+            </div>
+            <div>
+              <span>Connected accounts</span>
+              <strong>{connectedAccountCount}</strong>
+            </div>
+            <div>
+              <span>Queued posts</span>
+              <strong>{queuedPagePosts}</strong>
+            </div>
+            <div>
+              <span>Failed posts</span>
+              <strong>{failedPagePosts}</strong>
+            </div>
+          </section>
+
+          <div className="list-toolbar">
+            <SortControl onChange={setClientSort} options={PROJECT_SORT_OPTIONS} value={clientSort} />
+          </div>
+
+          <div className="projects-layout">
         <div className="project-list">
-          {pages.length ? (
-            pages.map((page) => (
+          {sortedPages.length ? (
+            sortedPages.map((page) => (
               <button
                 className={selected?.id === page.id ? "project-card project-card-active" : "project-card"}
                 key={page.id}
@@ -1708,7 +2559,6 @@ function ProjectsPage(props: {
         <Card
           actions={selected ? <Button onClick={() => props.onConnectAccount(selected.id)} variant="ghost">Connect</Button> : null}
           className="project-detail"
-          description="Accounts and settings saved for the selected page."
           title="Page snapshot"
         >
           {selected ? (
@@ -1755,7 +2605,80 @@ function ProjectsPage(props: {
             <EmptyState description="Select a page to view details." title="No page selected" />
           )}
         </Card>
-      </div>
+          </div>
+        </>
+      ) : null}
+
+      {view === "accounts" ? (
+        <div className="focus-grid">
+          <Card
+            actions={
+              <>
+                <SortControl onChange={setAccountSort} options={PROJECT_ACCOUNT_SORT_OPTIONS} value={accountSort} />
+                {selected ? <Button onClick={() => props.onConnectAccount(selected.id)} variant="primary">Connect account</Button> : null}
+              </>
+            }
+            title="Connected accounts"
+          >
+            {sortedAccountRows.length ? (
+              <ResponsiveTable
+                columns={[
+                  { key: "page", label: "Page", render: (item) => <strong>{item.page.name}</strong> },
+                  { key: "platform", label: "Platform", render: (item) => <Badge tone="info">{item.account.platform}</Badge> },
+                  { key: "name", label: "Account", render: (item) => item.account.account_name || "Unnamed account" },
+                  { key: "state", label: "State", render: (item) => <Badge tone={item.account.is_active ? "good" : "warn"}>{item.account.is_active ? "Active" : "Inactive"}</Badge> },
+                ]}
+                getKey={(item) => item.account.id}
+                items={sortedAccountRows}
+              />
+            ) : (
+              <EmptyState
+                action={selected ? <Button onClick={() => props.onConnectAccount(selected.id)}>Connect account</Button> : null}
+                description="No matching pages have connected social accounts."
+                title="No accounts"
+              />
+            )}
+          </Card>
+          <Card title="Account coverage">
+            <BarChart
+              items={pages.map((page) => ({
+                label: page.name,
+                value: page.social_accounts.length,
+                tone: page.social_accounts.length ? "good" : "warn",
+              }))}
+            />
+          </Card>
+        </div>
+      ) : null}
+
+      {view === "publishing" ? (
+        <div className="focus-grid">
+          <Card
+            actions={<SortControl onChange={setPublishingSort} options={PROJECT_SORT_OPTIONS} value={publishingSort} />}
+            title="Page publishing health"
+          >
+            <ResponsiveTable
+              columns={[
+                { key: "page", label: "Page", render: (page) => <strong>{page.name}</strong> },
+                { key: "queued", label: "Queued", render: (page) => page.stats.scheduled_posts },
+                { key: "posted", label: "Posted", render: (page) => page.stats.successful_posts },
+                { key: "failed", label: "Failed", render: (page) => <Badge tone={page.stats.failed_posts ? "bad" : "good"}>{page.stats.failed_posts}</Badge> },
+              ]}
+              getKey={(page) => page.id}
+              items={publishingPages}
+            />
+          </Card>
+          <Card title="Queued workload">
+            <BarChart
+              items={publishingPages.map((page) => ({
+                label: page.name,
+                value: page.stats.scheduled_posts,
+                tone: page.stats.failed_posts ? "bad" : "info",
+              }))}
+            />
+          </Card>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1771,6 +2694,7 @@ function PlannerPage(props: {
   draggingEventId: string | null;
   query: string;
   loading: boolean;
+  canManagePlanning: boolean;
   onPageChange: (pageId: number) => void;
   onMonthChange: (delta: number) => void;
   onWeekChange: (delta: number) => void;
@@ -1782,6 +2706,8 @@ function PlannerPage(props: {
   onPreview: (event: PlannerEvent) => void;
   onDuplicateRow: (row: PlanningRowRecord) => Promise<void>;
   onDeletePost: (post: PostRecord) => Promise<void>;
+  onPublishRow: (row: PlanningRowRecord) => Promise<void>;
+  onManualOpen: (post: PostRecord) => void;
   onManualComplete: (post: PostRecord) => Promise<void>;
   onRetryPost: (post: PostRecord) => Promise<void>;
   onImport: () => Promise<void>;
@@ -1791,32 +2717,87 @@ function PlannerPage(props: {
   const visibleEvents = props.events.filter((event) =>
     matchesQuery([event.title, event.pageName, event.status, event.platforms.join(" ")], props.query),
   );
-  const unscheduledRows = props.planning?.rows.filter((row) => !parseRowDate(row)) || [];
+  const draftRows = props.planning?.rows.filter((row) => !row.scheduled_post_id && !row.is_non_actionable) || [];
+  const visibleDraftRows = draftRows.filter((row) =>
+    matchesQuery([row.theme, row.job_nr, row.post_copy, row.linked_accounts, row.designer], props.query),
+  );
+  const [view, setView] = useState<"calendar" | "list" | "queue" | "drafts">("calendar");
+  const [readinessSort, setReadinessSort] = useState<PlannerEventSort>("date-asc");
+  const [queueSort, setQueueSort] = useState<PlannerEventSort>("date-asc");
+  const [draftSort, setDraftSort] = useState<DraftSort>("order-asc");
+  const selectedPage = props.workspace.pages.find((page) => page.id === props.selectedPageId) || null;
+  const todayKey = toDateKey(new Date());
+  const futureQueueEvents = visibleEvents.filter((event) => isPublishingQueueEvent(event, todayKey));
+  const sortedReadinessEvents = sortPlannerEvents(visibleEvents, readinessSort);
+  const sortedFutureQueueEvents = sortPlannerEvents(futureQueueEvents, queueSort);
+  const sortedDraftRows = sortDraftRows(
+    visibleDraftRows,
+    draftSort,
+    props.planning?.job_color_rules.required_to_schedule || READY_COLOR,
+  );
+  const readyDrafts =
+    draftRows.filter(
+      (row) => rowStatus(row, props.planning?.job_color_rules.required_to_schedule || READY_COLOR).label === "Draft",
+    ).length || 0;
+  const listRowsWithoutDates = sortedDraftRows.filter((row) => !parseRowDate(row));
 
   return (
     <div className="page-stack">
       <PageHeader
         actions={
-          <>
-            <Button onClick={props.onImport}>Import planner</Button>
-            <Button icon="plus" onClick={() => props.onCreatePost(props.calendarAnchor)} variant="primary">
-              New planner row
-            </Button>
-          </>
+          props.canManagePlanning ? (
+            <>
+              <Button onClick={props.onImport}>Import posts</Button>
+              <Button icon="plus" onClick={() => props.onCreatePost(props.calendarAnchor)} variant="primary">
+                Create post
+              </Button>
+            </>
+          ) : null
         }
-        description="Calendar-first planning for what gets posted, when, and where."
         eyebrow="Publishing workflow"
         meta={
           <>
             <Badge tone="info">{formatMonth(props.selectedMonth)}</Badge>
             <Badge tone={props.loading ? "warn" : "good"}>{props.loading ? "Loading" : "Synced"}</Badge>
-            <Badge tone="info">{visibleEvents.length} calendar items</Badge>
+            <Badge tone="info">{futureQueueEvents.length} queued</Badge>
           </>
         }
         title="Planner"
       />
 
-      <Card>
+      <SectionTabs
+        items={[
+          { value: "calendar", label: "Calendar", count: visibleEvents.length },
+          { value: "list", label: "List", count: visibleEvents.length + listRowsWithoutDates.length },
+          { value: "queue", label: "Queue", count: futureQueueEvents.length },
+          { value: "drafts", label: "Drafts", count: visibleDraftRows.length },
+        ]}
+        onChange={setView}
+        value={view}
+      />
+
+      <section className="planner-command-grid" aria-label="Planner command metrics">
+        <div>
+          <span>Selected client</span>
+          <strong>{selectedPage?.name || "No page selected"}</strong>
+        </div>
+        <div>
+          <span>Calendar items</span>
+          <strong>{visibleEvents.length}</strong>
+        </div>
+        <div>
+          <span>Ready drafts</span>
+          <strong>{readyDrafts}</strong>
+        </div>
+        <div>
+          <span>Drafts</span>
+          <strong>{draftRows.length}</strong>
+        </div>
+      </section>
+
+      {view === "calendar" ? (
+        <>
+      <Card className="planner-control-card">
         <div className="planner-toolbar">
           <select
             aria-label="Select page"
@@ -1869,6 +2850,7 @@ function PlannerPage(props: {
       <div className="planner-layout planner-layout-calendar">
         <Card className="calendar-card" title={props.calendarMode === "month" ? formatMonth(props.selectedMonth) : "Week view"}>
           <CalendarGrid
+            canManagePlanning={props.canManagePlanning}
             days={calendarDays}
             draggingEventId={props.draggingEventId}
             events={visibleEvents}
@@ -1881,19 +2863,25 @@ function PlannerPage(props: {
           />
         </Card>
 
-        <Card description="Rows that need action are pulled out of the calendar for quick follow-up." title="Readiness">
+        <Card
+          actions={<SortControl onChange={setReadinessSort} options={PLANNER_EVENT_SORT_OPTIONS} value={readinessSort} />}
+          title="Readiness"
+        >
           <div className="queue-list">
-            {visibleEvents.slice(0, 8).map((event) => (
+            {sortedReadinessEvents.slice(0, 8).map((event) => (
               <PlannerEventRow
                 action={
                   <PlannerEventActions
                     event={event}
                     onDeletePost={props.onDeletePost}
                     onDuplicateRow={props.onDuplicateRow}
+                    onManualOpen={props.onManualOpen}
+                    onPublishRow={props.onPublishRow}
                     onManualComplete={props.onManualComplete}
                     onPreview={props.onPreview}
                     onRetryPost={props.onRetryPost}
                     onSchedule={props.onSchedule}
+                    canManagePlanning={props.canManagePlanning}
                   />
                 }
                 event={event}
@@ -1902,41 +2890,142 @@ function PlannerPage(props: {
             ))}
             {!visibleEvents.length ? (
               <EmptyState
-                description="No dated rows or scheduled posts match this view."
+                description="No dated posts match this view."
                 title="No calendar items"
               />
             ) : null}
           </div>
         </Card>
       </div>
+        </>
+      ) : null}
 
-      {unscheduledRows.length ? (
-        <Card description="These planner rows are saved, but do not have a calendar date yet." title="Unscheduled rows">
-          <div className="queue-list">
-            {unscheduledRows.map((row) => {
-              const status = rowStatus(row, props.planning?.job_color_rules.required_to_schedule || READY_COLOR);
-              return (
-                <article className="planner-row" key={row.id}>
-                  <div className="planner-time">Row {row.row_order}</div>
-                  <div className="planner-content">
-                    <div>
-                      <strong>{row.theme || row.job_nr || "Untitled row"}</strong>
-                      <span>{row.post_copy || "No post copy saved yet."}</span>
-                    </div>
-                    <div className="chip-row">
-                      <span className="chip">{row.linked_accounts || "No accounts"}</span>
-                      {row.designer ? <span className="chip">{row.designer}</span> : null}
-                    </div>
-                  </div>
-                  <div className="planner-row-actions">
-                    <Badge tone={status.tone}>{status.label}</Badge>
-                    <Button onClick={() => props.onDuplicateRow(row)} variant="ghost">
-                      Duplicate
-                    </Button>
-                  </div>
-                </article>
-              );
-            })}
+      {view === "list" ? (
+        <>
+          <Card className="planner-control-card" title="List controls">
+            <div className="planner-toolbar">
+              <Field label="Page/client">
+                <select
+                  aria-label="Select page for list"
+                  onChange={(event) => props.onPageChange(Number(event.target.value))}
+                  value={props.selectedPageId || ""}
+                >
+                  {props.workspace.pages.map((page) => (
+                    <option key={page.id} value={page.id}>
+                      {page.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <div className="planner-list-context">
+                <span>Selected</span>
+                <strong>{selectedPage?.name || "No page selected"}</strong>
+              </div>
+            </div>
+          </Card>
+          <Card
+            actions={<SortControl onChange={setReadinessSort} options={PLANNER_EVENT_SORT_OPTIONS} value={readinessSort} />}
+            title="All posts"
+          >
+            <div className="queue-list queue-list-wide">
+              {sortPlannerEvents(visibleEvents, readinessSort).map((event) => (
+                <PlannerEventRow
+                  action={
+                    <PlannerEventActions
+                      event={event}
+                      onDeletePost={props.onDeletePost}
+                      onDuplicateRow={props.onDuplicateRow}
+                      onManualOpen={props.onManualOpen}
+                      onPublishRow={props.onPublishRow}
+                      onManualComplete={props.onManualComplete}
+                      onPreview={props.onPreview}
+                      onRetryPost={props.onRetryPost}
+                      onSchedule={props.onSchedule}
+                      canManagePlanning={props.canManagePlanning}
+                    />
+                  }
+                  event={event}
+                  key={event.id}
+                />
+              ))}
+              {listRowsWithoutDates.map((row) => (
+                <PlannerDraftRow
+                  canManagePlanning={props.canManagePlanning}
+                  key={`draft-${row.id}`}
+                  onDuplicateRow={props.onDuplicateRow}
+                  onPublishRow={props.onPublishRow}
+                  onSchedule={props.onSchedule}
+                  row={row}
+                  status={rowStatus(row, props.planning?.job_color_rules.required_to_schedule || READY_COLOR)}
+                />
+              ))}
+              {!visibleEvents.length && !listRowsWithoutDates.length ? (
+                <EmptyState description="No posts match this search." title="No posts" />
+              ) : null}
+            </div>
+          </Card>
+        </>
+      ) : null}
+
+      {view === "queue" ? (
+        <Card
+          actions={<SortControl onChange={setQueueSort} options={PLANNER_EVENT_SORT_OPTIONS} value={queueSort} />}
+          title="Publishing queue"
+        >
+          <div className="queue-list queue-list-wide">
+            {sortedFutureQueueEvents.length ? (
+              sortedFutureQueueEvents.map((event) => (
+                <PlannerEventRow
+                  action={
+                    <PlannerEventActions
+                      event={event}
+                      onDeletePost={props.onDeletePost}
+                      onDuplicateRow={props.onDuplicateRow}
+                      onManualOpen={props.onManualOpen}
+                      onPublishRow={props.onPublishRow}
+                      onManualComplete={props.onManualComplete}
+                      onPreview={props.onPreview}
+                      onRetryPost={props.onRetryPost}
+                      onSchedule={props.onSchedule}
+                      canManagePlanning={props.canManagePlanning}
+                    />
+                  }
+                  event={event}
+                  key={event.id}
+                />
+              ))
+            ) : (
+              <EmptyState
+                description="Only future queued posts appear here."
+                title="No future queued posts"
+              />
+            )}
+          </div>
+        </Card>
+      ) : null}
+
+      {view === "drafts" ? (
+        <Card
+          actions={<SortControl onChange={setDraftSort} options={DRAFT_SORT_OPTIONS} value={draftSort} />}
+          title="Drafts"
+        >
+          <div className="queue-list queue-list-wide">
+            {sortedDraftRows.length ? sortedDraftRows.map((row) => (
+              <PlannerDraftRow
+                canManagePlanning={props.canManagePlanning}
+                key={row.id}
+                onDuplicateRow={props.onDuplicateRow}
+                onPublishRow={props.onPublishRow}
+                onSchedule={props.onSchedule}
+                row={row}
+                status={rowStatus(row, props.planning?.job_color_rules.required_to_schedule || READY_COLOR)}
+              />
+            )) : (
+              <EmptyState
+                description="Create a post to start a draft for the selected client."
+                title="No drafts"
+              />
+            )}
           </div>
         </Card>
       ) : null}
@@ -1956,7 +3045,12 @@ function buildInsightChart(
 
 function isSupportedInsightMetric(metricName: string | null | undefined): boolean {
   const normalized = String(metricName || "").trim().toLowerCase();
-  return Boolean(normalized) && normalized !== "fans" && normalized !== "fan_count" && !normalized.startsWith("page_fan");
+  return Boolean(normalized)
+    && normalized !== "fans"
+    && normalized !== "fan_count"
+    && normalized !== "online_followers"
+    && normalized !== "page_follows"
+    && !normalized.startsWith("page_fan");
 }
 
 function isDisplayInsight(insight: SocialInsightRecord): boolean {
@@ -1967,12 +3061,61 @@ function accountInsightsForDisplay(account: AnalyticsAccountRecord): SocialInsig
   return (Array.isArray(account.insights) ? account.insights : []).filter(isDisplayInsight);
 }
 
+function accountInsightDiagnostics(account: AnalyticsAccountRecord): SocialInsightRecord[] {
+  return Array.isArray(account.diagnostics) ? account.diagnostics : [];
+}
+
+function diagnosticMessage(insight: SocialInsightRecord): string {
+  if (insight.error_message) {
+    return insight.error_message;
+  }
+  const metadata = insight.source_metadata || {};
+  const reason = typeof metadata.reason === "string" ? metadata.reason : null;
+  const availability = typeof metadata.availability === "string" ? metadata.availability : null;
+  if (reason === "permission_unavailable") {
+    return "Meta marked this metric unavailable. Check permissions, account type, and metric availability.";
+  }
+  if (reason === "no_data" || availability === "unavailable") {
+    return "Meta returned no value for this metric in the selected refresh window.";
+  }
+  return "Metric unavailable or returned no numeric value.";
+}
+
+function diagnosticRawMetric(insight: SocialInsightRecord): string {
+  const metadata = insight.source_metadata || {};
+  const graphMetric = metadata.graph_metric;
+  if (typeof graphMetric === "string" && graphMetric.trim()) {
+    return graphMetric;
+  }
+  const candidates = metadata.candidate_metrics;
+  if (Array.isArray(candidates) && candidates.length) {
+    return candidates.map(String).join(", ");
+  }
+  const fields = metadata.candidate_fields;
+  if (Array.isArray(fields) && fields.length) {
+    return fields.map(String).join(", ");
+  }
+  return insight.metric_name;
+}
+
+function insightDiagnostics(accounts: AnalyticsAccountRecord[]): Array<{ account: AnalyticsAccountRecord; insight: SocialInsightRecord }> {
+  return accounts
+    .flatMap((account) => accountInsightDiagnostics(account).map((insight) => ({ account, insight })))
+    .sort((a, b) => {
+      const aDate = insightDate(a.insight)?.getTime() || 0;
+      const bDate = insightDate(b.insight)?.getTime() || 0;
+      return bDate - aDate;
+    });
+}
+
 function formatMetricName(metricName: string): string {
   const labels: Record<string, string> = {
     views: "Views",
     page_media_view: "Views",
-    page_views_total: "Views",
-    engagement: "Engagement",
+    page_views_total: "Visits",
+    page_impressions_unique: "Reach",
+    page_total_media_view_unique: "Viewers",
+    engagement: "Content interactions",
     page_post_engagements: "Engagement",
     followers: "Followers",
     followers_count: "Followers",
@@ -1980,13 +3123,13 @@ function formatMetricName(metricName: string): string {
     visits: "Visits",
     media_count: "Media count",
     profile_views: "Visits",
-    online_followers: "Online followers",
     reactions: "Reactions",
     likes: "Likes",
     comments: "Comments",
     shares: "Shares",
     saved: "Saves",
-    total_interactions: "Total interactions",
+    accounts_engaged: "Content interactions",
+    total_interactions: "Content interactions",
   };
   const normalized = metricName.trim().toLowerCase();
   if (labels[normalized]) {
@@ -2001,25 +3144,261 @@ function formatMetricName(metricName: string): string {
 
 function analyticsMetricCategory(metricName: string | null | undefined): string {
   const normalized = String(metricName || "").trim().toLowerCase();
-  if (["views", "page_media_view", "page_views_total"].includes(normalized)) {
+  if (["views", "page_media_view"].includes(normalized)) {
     return "views";
   }
   if (["engagement", "page_post_engagements", "total_interactions", "accounts_engaged"].includes(normalized)) {
     return "engagement";
   }
-  if (["followers", "followers_count", "follower_count", "page_follows"].includes(normalized)) {
+  if (["followers", "followers_count", "follower_count"].includes(normalized)) {
     return "followers";
   }
-  if (["reach"].includes(normalized)) {
+  if (["reach", "page_impressions_unique", "page_total_media_view_unique"].includes(normalized)) {
     return "reach";
   }
-  if (["visits", "profile_views"].includes(normalized)) {
+  if (["visits", "profile_views", "page_views_total"].includes(normalized)) {
     return "visits";
   }
   if (["media_count"].includes(normalized)) {
     return "media_count";
   }
   return normalized || "metric";
+}
+
+function startOfLocalDay(date: Date): Date {
+  const copy = new Date(date);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
+}
+
+function endOfLocalDay(date: Date): Date {
+  const copy = new Date(date);
+  copy.setHours(23, 59, 59, 999);
+  return copy;
+}
+
+function sameLocalDay(left: Date, right: Date): boolean {
+  return startOfLocalDay(left).getTime() === startOfLocalDay(right).getTime();
+}
+
+function insightRawDate(value: string | null | undefined): Date | null {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function insightInterval(insight: SocialInsightRecord): { start: Date; end: Date } | null {
+  const start = insightRawDate(insight.start_date);
+  const end = insightRawDate(insight.end_date);
+  if (!start || !end) {
+    return null;
+  }
+  return {
+    start: startOfLocalDay(start),
+    end: startOfLocalDay(end),
+  };
+}
+
+function isRangeTotalInsight(insight: SocialInsightRecord): boolean {
+  const interval = insightInterval(insight);
+  return Boolean(interval && !sameLocalDay(interval.start, interval.end));
+}
+
+function latestInsightTime(insight: SocialInsightRecord): number {
+  const refreshedAt = insightRawDate(insight.refreshed_at);
+  return refreshedAt?.getTime() || insightDate(insight)?.getTime() || 0;
+}
+
+function metricRangeBounds(
+  range: AnalyticsRange,
+  customStart?: string,
+  customEnd?: string,
+): { start: Date | null; end: Date | null } {
+  const bounds = rangeBounds(range, customStart, customEnd);
+  return {
+    start: bounds.start ? startOfLocalDay(bounds.start) : null,
+    end: bounds.end ? endOfLocalDay(bounds.end) : endOfLocalDay(new Date()),
+  };
+}
+
+function selectIntervalPartition(
+  rows: SocialInsightRecord[],
+  targetStart: Date,
+  targetEnd: Date,
+): number | null {
+  const latestByRange = new Map<string, SocialInsightRecord>();
+  rows.forEach((row) => {
+    const interval = insightInterval(row);
+    if (!interval) {
+      return;
+    }
+    if (interval.start < startOfLocalDay(targetStart) || interval.end > startOfLocalDay(targetEnd)) {
+      return;
+    }
+    const key = `${toDateKey(interval.start)}:${toDateKey(interval.end)}`;
+    const current = latestByRange.get(key);
+    if (!current || latestInsightTime(row) >= latestInsightTime(current)) {
+      latestByRange.set(key, row);
+    }
+  });
+  const candidates = Array.from(latestByRange.values());
+  const targetStartDay = startOfLocalDay(targetStart);
+  const targetEndDay = startOfLocalDay(targetEnd);
+  const exact = candidates
+    .filter((row) => {
+      const interval = insightInterval(row);
+      return Boolean(interval && sameLocalDay(interval.start, targetStartDay) && sameLocalDay(interval.end, targetEndDay));
+    })
+    .sort((a, b) => latestInsightTime(b) - latestInsightTime(a));
+  if (exact.length) {
+    return Number(exact[0].metric_value || 0);
+  }
+
+  const selected: SocialInsightRecord[] = [];
+  const cursor = new Date(targetStartDay);
+  while (cursor <= targetEndDay) {
+    const choices = candidates
+      .filter((row) => {
+        const interval = insightInterval(row);
+        return Boolean(interval && sameLocalDay(interval.start, cursor) && interval.end <= targetEndDay);
+      })
+      .sort((a, b) => {
+        const aInterval = insightInterval(a);
+        const bInterval = insightInterval(b);
+        const endDelta = (bInterval?.end.getTime() || 0) - (aInterval?.end.getTime() || 0);
+        return endDelta || latestInsightTime(b) - latestInsightTime(a);
+      });
+    if (!choices.length) {
+      return null;
+    }
+    const choice = choices[0];
+    const interval = insightInterval(choice);
+    if (!interval) {
+      return null;
+    }
+    selected.push(choice);
+    cursor.setTime(interval.end.getTime());
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return selected.reduce((sum, row) => sum + Number(row.metric_value || 0), 0);
+}
+
+function selectBestRangeTotalInsight(
+  rows: SocialInsightRecord[],
+  targetStart: Date,
+  targetEnd: Date,
+): SocialInsightRecord | null {
+  const targetStartDay = startOfLocalDay(targetStart);
+  const targetEndDay = startOfLocalDay(targetEnd);
+  const targetEndTime = targetEndDay.getTime();
+  const candidates = rows
+    .filter((row) => row.metric_value !== null && !row.error_message && isRangeTotalInsight(row))
+    .map((row) => {
+      const interval = insightInterval(row);
+      return interval ? { row, interval } : null;
+    })
+    .filter((item): item is { row: SocialInsightRecord; interval: { start: Date; end: Date } } => Boolean(item))
+    .filter(({ interval }) => interval.end >= targetStartDay && interval.start <= targetEndDay);
+  if (!candidates.length) {
+    return null;
+  }
+
+  const exact = candidates
+    .filter(({ interval }) => {
+      if (!sameLocalDay(interval.start, targetStartDay)) {
+        return false;
+      }
+      if (sameLocalDay(interval.end, targetEndDay)) {
+        return true;
+      }
+      const daysShort = Math.round((targetEndTime - interval.end.getTime()) / 86400000);
+      return daysShort >= 0 && daysShort <= 1;
+    })
+    .sort((a, b) => latestInsightTime(b.row) - latestInsightTime(a.row));
+  if (exact.length) {
+    return exact[0].row;
+  }
+
+  const contained = candidates
+    .filter(({ interval }) => interval.start >= targetStartDay && interval.end <= targetEndDay)
+    .sort((a, b) => {
+      const coverageDelta = (b.interval.end.getTime() - b.interval.start.getTime()) - (a.interval.end.getTime() - a.interval.start.getTime());
+      return coverageDelta || latestInsightTime(b.row) - latestInsightTime(a.row);
+    });
+  if (contained.length) {
+    return contained[0].row;
+  }
+
+  const covering = candidates
+    .filter(({ interval }) => interval.start <= targetStartDay && interval.end >= targetEndDay)
+    .sort((a, b) => {
+      const spanDelta = (a.interval.end.getTime() - a.interval.start.getTime()) - (b.interval.end.getTime() - b.interval.start.getTime());
+      return spanDelta || latestInsightTime(b.row) - latestInsightTime(a.row);
+    });
+  return covering.length ? covering[0].row : null;
+}
+
+function activityMetricValue(
+  rows: SocialInsightRecord[],
+  metric: string,
+  start: Date | null,
+  end: Date | null,
+): number {
+  const metricRows = rows.filter((insight) => analyticsMetricCategory(insight.metric_name) === metric);
+  if (!metricRows.length) {
+    return 0;
+  }
+  if (!start || !end) {
+    const latestRows = metricRows
+      .filter((insight) => insight.period === "lifetime")
+      .sort((a, b) => latestInsightTime(b) - latestInsightTime(a));
+    if (latestRows.length) {
+      return Math.round(Number(latestRows[0].metric_value || 0));
+    }
+    return Math.round(metricRows.reduce((sum, insight) => sum + Number(insight.metric_value || 0), 0));
+  }
+
+  const intervalTotal = selectIntervalPartition(metricRows, start, end);
+  if (intervalTotal !== null) {
+    return Math.round(intervalTotal);
+  }
+
+  const rangeTotal = selectBestRangeTotalInsight(metricRows, start, end);
+  if (rangeTotal) {
+    return Math.round(Number(rangeTotal.metric_value || 0));
+  }
+
+  if (metric === "reach") {
+    const periodRows = metricRows
+      .filter((insight) => insight.period && insight.period !== "day")
+      .filter((insight) => {
+        const date = insightDate(insight);
+        return Boolean(date && date >= start && date <= end);
+      })
+      .sort((a, b) => latestInsightTime(b) - latestInsightTime(a));
+    return periodRows.length ? Math.round(Number(periodRows[0].metric_value || 0)) : 0;
+  }
+
+  const latestByDay = new Map<string, SocialInsightRecord>();
+  metricRows.forEach((insight) => {
+    if (isRangeTotalInsight(insight)) {
+      return;
+    }
+    const date = insightDate(insight);
+    if (!date || date < start || date > end) {
+      return;
+    }
+    const key = toDateKey(date);
+    const current = latestByDay.get(key);
+    if (!current || latestInsightTime(insight) >= latestInsightTime(current)) {
+      latestByDay.set(key, insight);
+    }
+  });
+  return Math.round(
+    Array.from(latestByDay.values()).reduce((sum, insight) => sum + Number(insight.metric_value || 0), 0),
+  );
 }
 
 function formatCompactNumber(value: number | null | undefined): string {
@@ -2036,18 +3415,18 @@ function accountMetricValue(
   customStart?: string,
   customEnd?: string,
 ): number {
-  const rows = filterInsightsByRange(accountInsightsForDisplay(account), range, customStart, customEnd)
-    .filter((insight) => analyticsMetricCategory(insight.metric_name) === metric);
-  if (!rows.length) {
-    return 0;
+  const latestValueMetrics = new Set(["followers", "media_count"]);
+  if (latestValueMetrics.has(metric)) {
+    const candidates = accountInsightsForDisplay(account)
+      .filter((insight) => analyticsMetricCategory(insight.metric_name) === metric)
+      .filter((insight) => insight.period === "lifetime" || insight.period === "snapshot");
+    const rangeRows = filterInsightsByRange(candidates, range, customStart, customEnd);
+    const latestRows = (rangeRows.length ? rangeRows : candidates)
+      .sort((a, b) => (insightDate(b)?.getTime() || 0) - (insightDate(a)?.getTime() || 0));
+    return latestRows.length ? Math.round(Number(latestRows[0].metric_value || 0)) : 0;
   }
-  const lifetimeRows = rows
-    .filter((insight) => insight.period === "lifetime")
-    .sort((a, b) => (insightDate(b)?.getTime() || 0) - (insightDate(a)?.getTime() || 0));
-  if (lifetimeRows.length) {
-    return Math.round(Number(lifetimeRows[0].metric_value || 0));
-  }
-  return Math.round(rows.reduce((sum, insight) => sum + Number(insight.metric_value || 0), 0));
+  const bounds = metricRangeBounds(range, customStart, customEnd);
+  return activityMetricValue(accountInsightsForDisplay(account), metric, bounds.start, bounds.end);
 }
 
 function buildMetricTimeSeries(
@@ -2058,22 +3437,67 @@ function buildMetricTimeSeries(
   customEnd?: string,
 ): TimeSeriesPoint[] {
   const buckets = new Map<string, number>();
+  const latestValueMetrics = new Set(["followers", "media_count"]);
+  const bounds = metricRangeBounds(range, customStart, customEnd);
+  let usedRangeTotals = false;
   accounts.forEach((account) => {
-    filterInsightsByRange(accountInsightsForDisplay(account), range, customStart, customEnd)
-      .filter((insight) => analyticsMetricCategory(insight.metric_name) === metric)
-      .forEach((insight) => {
+    const metricRows = accountInsightsForDisplay(account)
+      .filter((insight) => analyticsMetricCategory(insight.metric_name) === metric);
+    const accountRows = filterInsightsByRange(metricRows, range, customStart, customEnd)
+      .filter((insight) => !latestValueMetrics.has(metric) || insight.period === "lifetime" || insight.period === "snapshot");
+    if (latestValueMetrics.has(metric)) {
+      const accountBuckets = new Map<string, { value: number; time: number }>();
+      accountRows.forEach((insight) => {
         const date = insightDate(insight);
         if (!date) {
           return;
         }
         const key = toDateKey(date);
-        buckets.set(key, (buckets.get(key) || 0) + Number(insight.metric_value || 0));
+        const time = date.getTime();
+        const current = accountBuckets.get(key);
+        if (!current || time >= current.time) {
+          accountBuckets.set(key, { value: Number(insight.metric_value || 0), time });
+        }
       });
+      accountBuckets.forEach((item, key) => {
+        buckets.set(key, (buckets.get(key) || 0) + item.value);
+      });
+      return;
+    }
+    if (range !== "all" && bounds.start && bounds.end) {
+      const rangeTotal = selectBestRangeTotalInsight(metricRows, bounds.start, bounds.end);
+      const rangeTotalDate = rangeTotal ? insightInterval(rangeTotal)?.end || insightDate(rangeTotal) : null;
+      if (rangeTotal && rangeTotalDate) {
+        const key = toDateKey(bounds.end);
+        buckets.set(key, (buckets.get(key) || 0) + Number(rangeTotal.metric_value || 0));
+        usedRangeTotals = true;
+        return;
+      }
+    }
+    const accountBuckets = new Map<string, { value: number; time: number }>();
+    accountRows.forEach((insight) => {
+      if (isRangeTotalInsight(insight)) {
+        return;
+      }
+      const date = insightDate(insight);
+      if (!date) {
+        return;
+      }
+      const key = toDateKey(date);
+      const time = latestInsightTime(insight);
+      const current = accountBuckets.get(key);
+      if (!current || time >= current.time) {
+        accountBuckets.set(key, { value: Number(insight.metric_value || 0), time });
+      }
+    });
+    accountBuckets.forEach((item, key) => {
+      buckets.set(key, (buckets.get(key) || 0) + item.value);
+    });
   });
   const series = Array.from(buckets.entries())
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([date, value]) => ({ date, value: Math.round(value) }));
-  return expandMetricSeries(series, range, customStart, customEnd);
+  return usedRangeTotals ? series : expandMetricSeries(series, range, customStart, customEnd);
 }
 
 function dateKeyToDate(value: string): Date | null {
@@ -2168,18 +3592,19 @@ function sumMetricForExplicitRange(
   start: Date | null,
   end: Date | null,
 ): number {
+  if (["followers", "media_count"].includes(metric)) {
+    return accounts.reduce((sum, account) => sum + accountMetricValue(account, metric, "all"), 0);
+  }
   if (!start || !end) {
     return 0;
   }
   return accounts.reduce((sum, account) => {
-    const accountSum = accountInsightsForDisplay(account)
-      .filter((insight) => analyticsMetricCategory(insight.metric_name) === metric)
-      .filter((insight) => {
-        const date = insightDate(insight);
-        return Boolean(date && date >= start && date <= end);
-      })
-      .reduce((metricSum, insight) => metricSum + Number(insight.metric_value || 0), 0);
-    return sum + accountSum;
+    return sum + activityMetricValue(
+      accountInsightsForDisplay(account),
+      metric,
+      startOfLocalDay(start),
+      endOfLocalDay(end),
+    );
   }, 0);
 }
 
@@ -2240,6 +3665,49 @@ function postPlatformId(post: PostRecord, platform: string): string | null {
   return ids[platform] || null;
 }
 
+function normalizePostMatchText(value: string | null | undefined): string {
+  return String(value || "").toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+function postCaptionsMatch(localCaption: string, remoteCaption: string): boolean {
+  const local = normalizePostMatchText(localCaption);
+  const remote = normalizePostMatchText(remoteCaption);
+  if (!local || !remote) {
+    return false;
+  }
+  if (local === remote) {
+    return true;
+  }
+  const shortest = Math.min(local.length, remote.length);
+  if (shortest < 32) {
+    return false;
+  }
+  if (local.slice(0, 160) === remote.slice(0, 160)) {
+    return true;
+  }
+  return shortest >= 80 && (local.includes(remote) || remote.includes(local));
+}
+
+function datesWithinHours(first: string | null, second: string | null, hours: number): boolean {
+  if (!first || !second) {
+    return false;
+  }
+  const firstDate = new Date(first);
+  const secondDate = new Date(second);
+  if (Number.isNaN(firstDate.getTime()) || Number.isNaN(secondDate.getTime())) {
+    return false;
+  }
+  return Math.abs(firstDate.getTime() - secondDate.getTime()) <= hours * 60 * 60 * 1000;
+}
+
+function localRowMatchesRemotePost(row: AnalyticsPostRow, remote: AnalyticsPostInsightRecord): boolean {
+  if (row.platform !== remote.platform || row.pageId !== remote.page_id || row.platformPostId) {
+    return false;
+  }
+  const matchWindowHours = normalizePostMatchText(remote.caption).length >= 80 ? 48 : 12;
+  return postCaptionsMatch(row.caption, remote.caption) && datesWithinHours(row.publishedAt, remote.published_at, matchWindowHours);
+}
+
 function buildPostAnalyticsRows(
   posts: PostRecord[],
   pages: PageRecord[],
@@ -2256,8 +3724,11 @@ function buildPostAnalyticsRows(
 ): AnalyticsPostRow[] {
   const { start, end } = rangeBounds(options.range, options.customStart, options.customEnd);
   const pageNames = new Map(pages.map((page) => [page.id, page.name]));
+  const localPostIds = new Set(posts.map((post) => post.id));
   const postInsightsByPostPlatform = new Map(
-    (Array.isArray(analyticsPosts) ? analyticsPosts : []).map((item) => [`${item.internal_post_id}-${item.platform}`, item]),
+    (Array.isArray(analyticsPosts) ? analyticsPosts : [])
+      .filter((item) => typeof item.internal_post_id === "number")
+      .map((item) => [`${item.internal_post_id}-${item.platform}`, item]),
   );
   const postInsightsByRemoteId = new Map(
     (Array.isArray(analyticsPosts) ? analyticsPosts : [])
@@ -2265,6 +3736,7 @@ function buildPostAnalyticsRows(
       .map((item) => [`${item.platform}-${item.platform_post_id}`, item]),
   );
   const rows: AnalyticsPostRow[] = [];
+  const includedRemoteIds = new Set<string>();
   posts.forEach((post) => {
     const publishedAt = post.posted_at || post.scheduled_time || post.created_at;
     const postDate = publishedAt ? new Date(publishedAt) : null;
@@ -2286,37 +3758,173 @@ function buildPostAnalyticsRows(
       const platformPostId = postPlatformId(post, platform);
       const postInsight = postInsightsByPostPlatform.get(`${post.id}-${platform}`)
         || (platformPostId ? postInsightsByRemoteId.get(`${platform}-${platformPostId}`) : undefined);
-      const account = accounts.find((item) => item.page_id === post.page_id && item.platform === platform);
-      const views = postInsight ? Number(postInsight.views || 0) : account ? accountMetricValue(account, "views", options.range, options.customStart, options.customEnd) : null;
-      const engagement = postInsight ? Number(postInsight.engagement || 0) : account ? accountMetricValue(account, "engagement", options.range, options.customStart, options.customEnd) : null;
+      const resolvedPlatformPostId = platformPostId || postInsight?.platform_post_id || null;
       const row: AnalyticsPostRow = {
         id: `${post.id}-${platform}`,
         post,
+        pageId: post.page_id,
         platform,
-        platformPostId,
+        platformPostId: resolvedPlatformPostId,
         permalink: postInsight?.permalink || post.platform_urls?.[platform] || null,
         thumbnail: postInsight?.thumbnail || firstPostMedia(post),
         caption: postInsight?.caption || post.content || "No caption saved.",
         pageName: postInsight?.page_name || post.page_name || pageNames.get(post.page_id) || "Unknown page",
         publishedAt: postInsight?.published_at || publishedAt,
-        views: platformPostId ? views : null,
+        views: postInsight ? Number(postInsight.views || 0) : null,
         reach: postInsight ? Number(postInsight.reach || 0) : null,
-        engagement: platformPostId ? engagement : null,
+        engagement: postInsight ? Number(postInsight.engagement || 0) : null,
         comments: postInsight ? Number(postInsight.comments || 0) : null,
         shares: postInsight ? Number(postInsight.shares || 0) : null,
-        state: !platformPostId ? "missing_reference" : postInsight ? "ready" : "no_metrics",
+        state: !resolvedPlatformPostId ? "missing_reference" : postInsight ? "ready" : "no_metrics",
       };
+      if (resolvedPlatformPostId) {
+        includedRemoteIds.add(`${platform}-${resolvedPlatformPostId}`);
+      }
       if (matchesQuery([row.caption, row.pageName, row.platform, row.platformPostId], options.query)) {
         rows.push(row);
       }
     });
   });
+
+  (Array.isArray(analyticsPosts) ? analyticsPosts : []).forEach((postInsight) => {
+    const platformPostId = String(postInsight.platform_post_id || "").trim();
+    const remoteKey = `${postInsight.platform}-${platformPostId}`;
+    if (!platformPostId || includedRemoteIds.has(remoteKey)) {
+      return;
+    }
+    if (typeof postInsight.internal_post_id === "number" && localPostIds.has(postInsight.internal_post_id)) {
+      return;
+    }
+    const publishedAt = postInsight.published_at;
+    const postDate = publishedAt ? new Date(publishedAt) : null;
+    if (options.range !== "all" && postDate && !Number.isNaN(postDate.getTime())) {
+      if (start && postDate < start) {
+        return;
+      }
+      if (end && postDate > end) {
+        return;
+      }
+    }
+    if (options.platform !== "all" && postInsight.platform !== options.platform) {
+      return;
+    }
+    const pageId = postInsight.page_id;
+    if (options.pageId !== "all" && pageId !== options.pageId) {
+      return;
+    }
+    const matchingLocalRow = rows.find((row) => localRowMatchesRemotePost(row, postInsight));
+    if (matchingLocalRow) {
+      matchingLocalRow.platformPostId = platformPostId;
+      matchingLocalRow.permalink = postInsight.permalink;
+      matchingLocalRow.thumbnail = postInsight.thumbnail || matchingLocalRow.thumbnail;
+      matchingLocalRow.caption = postInsight.caption || matchingLocalRow.caption;
+      matchingLocalRow.publishedAt = postInsight.published_at || matchingLocalRow.publishedAt;
+      matchingLocalRow.views = Number(postInsight.views || 0);
+      matchingLocalRow.reach = Number(postInsight.reach || 0);
+      matchingLocalRow.engagement = Number(postInsight.engagement || 0);
+      matchingLocalRow.comments = Number(postInsight.comments || 0);
+      matchingLocalRow.shares = Number(postInsight.shares || 0);
+      matchingLocalRow.state = postInsight.state === "ready" ? "ready" : "no_metrics";
+      includedRemoteIds.add(remoteKey);
+      return;
+    }
+    const row: AnalyticsPostRow = {
+      id: `remote-${postInsight.id}`,
+      post: null,
+      pageId,
+      platform: postInsight.platform,
+      platformPostId,
+      permalink: postInsight.permalink,
+      thumbnail: postInsight.thumbnail,
+      caption: postInsight.caption || "No caption saved.",
+      pageName: postInsight.page_name || (pageId ? pageNames.get(pageId) : null) || "Unknown page",
+      publishedAt,
+      views: Number(postInsight.views || 0),
+      reach: Number(postInsight.reach || 0),
+      engagement: Number(postInsight.engagement || 0),
+      comments: Number(postInsight.comments || 0),
+      shares: Number(postInsight.shares || 0),
+      state: postInsight.state === "ready" ? "ready" : "no_metrics",
+    };
+    if (matchesQuery([row.caption, row.pageName, row.platform, row.platformPostId], options.query)) {
+      includedRemoteIds.add(remoteKey);
+      rows.push(row);
+    }
+  });
   return rows
     .sort((a, b) => {
-      const aScore = (a.engagement || 0) + (a.views || 0);
-      const bScore = (b.engagement || 0) + (b.views || 0);
-      return bScore - aScore;
+      const aDate = a.publishedAt ? new Date(a.publishedAt).getTime() : Number.POSITIVE_INFINITY;
+      const bDate = b.publishedAt ? new Date(b.publishedAt).getTime() : Number.POSITIVE_INFINITY;
+      if (aDate !== bDate) {
+        return aDate - bDate;
+      }
+      return `${a.platform}-${a.id}`.localeCompare(`${b.platform}-${b.id}`);
     });
+}
+
+function sortAnalyticsPosts(rows: AnalyticsPostRow[], sort: AnalyticsPostSort): AnalyticsPostRow[] {
+  return rows.slice().sort((left, right) => {
+    if (sort === "date-desc" || sort === "date-asc") {
+      return compareDates(left.publishedAt, right.publishedAt, sort === "date-desc")
+        || compareText(left.pageName, right.pageName)
+        || compareText(left.platform, right.platform);
+    }
+    if (sort === "views-desc" || sort === "views-asc") {
+      return compareNumbers(left.views, right.views, sort === "views-desc") || compareDates(left.publishedAt, right.publishedAt, true);
+    }
+    if (sort === "reach-desc" || sort === "reach-asc") {
+      return compareNumbers(left.reach, right.reach, sort === "reach-desc") || compareDates(left.publishedAt, right.publishedAt, true);
+    }
+    if (sort === "engagement-desc" || sort === "engagement-asc") {
+      return compareNumbers(left.engagement, right.engagement, sort === "engagement-desc") || compareDates(left.publishedAt, right.publishedAt, true);
+    }
+    if (sort === "comments-desc" || sort === "comments-asc") {
+      return compareNumbers(left.comments, right.comments, sort === "comments-desc") || compareDates(left.publishedAt, right.publishedAt, true);
+    }
+    return compareNumbers(left.shares, right.shares, sort === "shares-desc") || compareDates(left.publishedAt, right.publishedAt, true);
+  });
+}
+
+function sortAnalyticsAccounts(
+  accounts: AnalyticsAccountRecord[],
+  sort: AnalyticsAccountSort,
+  range: AnalyticsRange,
+  customStart: string,
+  customEnd: string,
+): AnalyticsAccountRecord[] {
+  return accounts.slice().sort((left, right) => {
+    if (sort === "name-desc" || sort === "name-asc") {
+      return compareText(left.account_name || left.page_name || left.platform, right.account_name || right.page_name || right.platform, sort === "name-desc");
+    }
+    const metric = sort.startsWith("engagement") ? "engagement" : sort.startsWith("followers") ? "followers" : "views";
+    return compareNumbers(
+      accountMetricValue(left, metric, range, customStart, customEnd),
+      accountMetricValue(right, metric, range, customStart, customEnd),
+      sort.endsWith("desc"),
+    ) || compareText(left.account_name || left.page_name, right.account_name || right.page_name);
+  });
+}
+
+function sortInsightDiagnostics(
+  rows: Array<{ account: AnalyticsAccountRecord; insight: SocialInsightRecord }>,
+  sort: DiagnosticSort,
+): Array<{ account: AnalyticsAccountRecord; insight: SocialInsightRecord }> {
+  return rows.slice().sort((left, right) => {
+    if (sort === "checked-desc" || sort === "checked-asc") {
+      return compareDates(
+        left.insight.last_error_at || left.insight.refreshed_at,
+        right.insight.last_error_at || right.insight.refreshed_at,
+        sort === "checked-desc",
+      );
+    }
+    if (sort === "account-asc") {
+      return compareText(left.account.account_name || left.account.page_name, right.account.account_name || right.account.page_name);
+    }
+    if (sort === "metric-asc") {
+      return compareText(left.insight.metric_name, right.insight.metric_name);
+    }
+    return compareText(left.insight.error_message ? "Error" : "Unavailable", right.insight.error_message ? "Error" : "Unavailable");
+  });
 }
 
 function insightDate(insight: SocialInsightRecord): Date | null {
@@ -2325,7 +3933,13 @@ function insightDate(insight: SocialInsightRecord): Date | null {
     return null;
   }
   const date = new Date(rawDate);
-  return Number.isNaN(date.getTime()) ? null : date;
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  if (insight.platform === "facebook" && insight.period === "day" && insight.end_date) {
+    date.setDate(date.getDate() - 1);
+  }
+  return date;
 }
 
 function rangeBounds(
@@ -2339,6 +3953,9 @@ function rangeBounds(
   if (range === "7d") {
     start = new Date(now);
     start.setDate(now.getDate() - 7);
+  } else if (range === "60d") {
+    start = new Date(now);
+    start.setDate(now.getDate() - 60);
   } else if (range === "30d") {
     start = new Date(now);
     start.setDate(now.getDate() - 30);
@@ -2412,6 +4029,10 @@ function metricOptionsForAccounts(accounts: AnalyticsAccountRecord[]): string[] 
 
 function downloadTextFile(filename: string, content: string, type = "text/plain"): void {
   const blob = new Blob([content], { type });
+  downloadBlobFile(filename, blob);
+}
+
+function downloadBlobFile(filename: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -2441,42 +4062,6 @@ function exportInsightsAsCsv(filename: string, rows: Array<{ account: AnalyticsA
         .map(escapeCell)
         .join(","),
     ),
-  ];
-  downloadTextFile(filename, lines.join("\n"), "text/csv");
-}
-
-function exportAnalyticsReportAsCsv(
-  filename: string,
-  summary: {
-    posted: number;
-    scheduled: number;
-    failed: number;
-    successRate: number;
-    postsInRange: number;
-    accounts: AnalyticsAccountRecord[];
-  },
-): void {
-  const escapeCell = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-  const accountRows = summary.accounts.flatMap((account) =>
-    accountInsightsForDisplay(account).map((insight) => [
-      "insight",
-      account.page_name,
-      account.account_name,
-      account.platform,
-      insight.metric_name,
-      insight.metric_value,
-      insight.period,
-      insight.end_date || insight.start_date || insight.refreshed_at,
-    ]),
-  );
-  const lines = [
-    ["section", "page", "account", "platform", "metric", "value", "period", "date"].map(escapeCell).join(","),
-    ["summary", "", "", "", "posted", summary.posted, "", ""].map(escapeCell).join(","),
-    ["summary", "", "", "", "scheduled", summary.scheduled, "", ""].map(escapeCell).join(","),
-    ["summary", "", "", "", "failed", summary.failed, "", ""].map(escapeCell).join(","),
-    ["summary", "", "", "", "success_rate", `${summary.successRate}%`, "", ""].map(escapeCell).join(","),
-    ["summary", "", "", "", "posts_in_range", summary.postsInRange, "", ""].map(escapeCell).join(","),
-    ...accountRows.map((row) => row.map(escapeCell).join(",")),
   ];
   downloadTextFile(filename, lines.join("\n"), "text/csv");
 }
@@ -2550,31 +4135,37 @@ function AnalyticsPage(props: {
   statusChart: ChartItem[];
   platformChart: ChartItem[];
   query: string;
-  onRefreshInsights: () => Promise<void>;
+  onExportReport: () => Promise<void>;
+  onRefreshInsights: (
+    accountId?: number,
+    onProgress?: (status: AnalyticsRefreshStatus) => void,
+    options?: { range: AnalyticsRange; customStart?: string; customEnd?: string },
+  ) => Promise<void>;
+  onReloadData: () => Promise<void>;
 }) {
-  const [range, setRange] = useState<AnalyticsRange>("30d");
-  const [customStart, setCustomStart] = useState(toDateKey(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)));
+  const [range, setRange] = useState<AnalyticsRange>("60d");
+  const [customStart, setCustomStart] = useState(toDateKey(new Date(Date.now() - 60 * 24 * 60 * 60 * 1000)));
   const [customEnd, setCustomEnd] = useState(toDateKey(new Date()));
   const [platformFilter, setPlatformFilter] = useState<"all" | "facebook" | "instagram">("all");
   const [pageFilter, setPageFilter] = useState<number | "all">("all");
   const [metricFilter, setMetricFilter] = useState("views");
   const [accountSearch, setAccountSearch] = useState("");
-  const [accountPage, setAccountPage] = useState(1);
-  const [selectedInsightAccountId, setSelectedInsightAccountId] = useState<number | null>(null);
-  const [accountTab, setAccountTab] = useState<"overview" | "trends" | "posts" | "raw" | "errors">("overview");
-  const [explorerOpen, setExplorerOpen] = useState(false);
-  const [explorerPageId, setExplorerPageId] = useState<number | null>(null);
-  const [explorerMetric, setExplorerMetric] = useState<string>("");
-  const [explorerPlatform, setExplorerPlatform] = useState<"all" | "facebook" | "instagram">("all");
-  const [explorerRange, setExplorerRange] = useState<AnalyticsRange>("30d");
-  const [explorerCustomStart, setExplorerCustomStart] = useState(toDateKey(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)));
-  const [explorerCustomEnd, setExplorerCustomEnd] = useState(toDateKey(new Date()));
-  const [explorerDisplay, setExplorerDisplay] = useState<InsightDisplayMode>("chart");
-  const [coverageMode, setCoverageMode] = useState<"platform" | "insights">("platform");
+  const [postRange, setPostRange] = useState<AnalyticsRange>("60d");
+  const [postCustomStart, setPostCustomStart] = useState(toDateKey(new Date(Date.now() - 60 * 24 * 60 * 60 * 1000)));
+  const [postCustomEnd, setPostCustomEnd] = useState(toDateKey(new Date()));
+  const [postPlatformFilter, setPostPlatformFilter] = useState<"all" | "facebook" | "instagram">("all");
+  const [postPageFilter, setPostPageFilter] = useState<number | "all">("all");
+  const [postSearch, setPostSearch] = useState("");
   const [rawOpen, setRawOpen] = useState(false);
+  const [view, setView] = useState<"overview" | "posts" | "accounts" | "diagnostics">("overview");
+  const [postSort, setPostSort] = useState<AnalyticsPostSort>("date-desc");
+  const [accountSort, setAccountSort] = useState<AnalyticsAccountSort>("views-desc");
+  const [diagnosticSort, setDiagnosticSort] = useState<DiagnosticSort>("checked-desc");
   const [manualRefreshState, setManualRefreshState] = useState<"idle" | "refreshing" | "error" | "partial">("idle");
-  const accountPageSize = 12;
-  const filteredPosts = useMemo(
+  const [manualRefreshMessage, setManualRefreshMessage] = useState("");
+  const [reloadState, setReloadState] = useState<"idle" | "loading" | "error">("idle");
+  const [exportState, setExportState] = useState<"idle" | "exporting" | "error">("idle");
+  const reportPosts = useMemo(
     () =>
       buildPostAnalyticsRows(props.workspace.posts, props.workspace.pages, props.accounts, props.analyticsPosts, {
         range,
@@ -2586,7 +4177,19 @@ function AnalyticsPage(props: {
       }),
     [props.workspace.posts, props.workspace.pages, props.accounts, props.analyticsPosts, range, customStart, customEnd, platformFilter, pageFilter, props.query],
   );
-  const visibleAccounts = props.accounts.filter((account) => {
+  const filteredPosts = useMemo(
+    () =>
+      buildPostAnalyticsRows(props.workspace.posts, props.workspace.pages, props.accounts, props.analyticsPosts, {
+        range: postRange,
+        customStart: postCustomStart,
+        customEnd: postCustomEnd,
+        platform: postPlatformFilter,
+        pageId: postPageFilter,
+        query: [props.query, postSearch].filter(Boolean).join(" "),
+      }),
+    [props.workspace.posts, props.workspace.pages, props.accounts, props.analyticsPosts, postRange, postCustomStart, postCustomEnd, postPlatformFilter, postPageFilter, props.query, postSearch],
+  );
+  const filteredAccounts = props.accounts.filter((account) => {
     const platformMatches = platformFilter === "all" || account.platform === platformFilter;
     const pageMatches = pageFilter === "all" || account.page_id === pageFilter;
     const searchMatches = matchesQuery(
@@ -2595,98 +4198,102 @@ function AnalyticsPage(props: {
     );
     return platformMatches && pageMatches && searchMatches;
   });
-  const totalAccountPages = Math.max(1, Math.ceil(visibleAccounts.length / accountPageSize));
-  const pagedAccounts = visibleAccounts.slice((accountPage - 1) * accountPageSize, accountPage * accountPageSize);
-  const selectedInsightAccount = selectedInsightAccountId
-    ? props.accounts.find((account) => account.id === selectedInsightAccountId) || null
-    : null;
+  const visibleAccounts = sortAnalyticsAccounts(filteredAccounts, accountSort, range, customStart, customEnd);
+  const sortedFilteredPosts = sortAnalyticsPosts(filteredPosts, postSort);
   const trendSeries = buildMetricTimeSeries(visibleAccounts, metricFilter, range, customStart, customEnd);
-  const viewsSeries = buildMetricTimeSeries(visibleAccounts, "views", range, customStart, customEnd);
-  const engagementSeries = buildMetricTimeSeries(visibleAccounts, "engagement", range, customStart, customEnd);
   const platformComparison = buildPlatformMetricComparison(visibleAccounts, metricFilter, range, customStart, customEnd);
   const accountComparison = buildAccountComparison(visibleAccounts, metricFilter, range, customStart, customEnd);
+  const selectedMetricTotal = visibleAccounts.reduce((sum, account) => sum + accountMetricValue(account, metricFilter, range, customStart, customEnd), 0);
   const totalViews = visibleAccounts.reduce((sum, account) => sum + accountMetricValue(account, "views", range, customStart, customEnd), 0);
   const totalEngagement = visibleAccounts.reduce((sum, account) => sum + accountMetricValue(account, "engagement", range, customStart, customEnd), 0);
   const totalFollowers = visibleAccounts.reduce((sum, account) => sum + accountMetricValue(account, "followers", range, customStart, customEnd), 0);
-  const bestAccount = buildAccountComparison(visibleAccounts, "engagement", range, customStart, customEnd)[0] || null;
-  const bestPost = filteredPosts[0] || null;
   const lastRefreshed = latestAnalyticsRefresh(props.accounts);
   const nextRefresh = analyticsNextRefresh(props.workspace);
-  const refreshStatus = props.loading || manualRefreshState === "refreshing"
+  const refreshStatus = manualRefreshState === "refreshing"
     ? "refreshing"
+    : manualRefreshState === "partial"
+      ? "still running"
+    : props.loading || reloadState === "loading"
+      ? "loading data"
     : manualRefreshState === "error"
       ? "error"
       : visibleAccounts.some((account) => account.last_error)
         ? "partial success"
         : "idle";
-  const selectedAccountInsights = selectedInsightAccount
-    ? filterInsightsByRange(
-        accountInsightsForDisplay(selectedInsightAccount),
-        range,
-        customStart,
-        customEnd,
-      )
-    : [];
-  const selectedAccountSeries = selectedInsightAccount
-    ? buildMetricTimeSeries([selectedInsightAccount], metricFilter, range, customStart, customEnd)
-    : [];
-  const selectedAccountChart = buildInsightChartFromRecords(selectedAccountInsights);
-  const metricOptions = metricOptionsForAccounts(props.accounts);
-  const explorerAccounts = props.accounts.filter((account) => {
-    const pageMatches = explorerPageId !== null && account.page_id === explorerPageId;
-    const platformMatches = explorerPlatform === "all" || account.platform === explorerPlatform;
-    return pageMatches && platformMatches;
-  });
-  const explorerRows = explorerAccounts.flatMap((account) =>
-    filterInsightsByRange(accountInsightsForDisplay(account), explorerRange, explorerCustomStart, explorerCustomEnd)
-      .filter((insight) => explorerMetric && insight.metric_name === explorerMetric)
+  const visibleDiagnostics = sortInsightDiagnostics(insightDiagnostics(visibleAccounts), diagnosticSort);
+  const rawInsightRows = visibleAccounts.flatMap((account) =>
+    filterInsightsByRange(accountInsightsForDisplay(account), range, customStart, customEnd)
       .map((insight) => ({ account, insight })),
   );
-  const explorerMetricKey = explorerMetric ? analyticsMetricCategory(explorerMetric) : metricFilter;
-  const explorerSeries = buildMetricTimeSeries(explorerAccounts, explorerMetricKey, explorerRange, explorerCustomStart, explorerCustomEnd);
-  const explorerBars = buildPlatformMetricComparison(explorerAccounts, explorerMetricKey, explorerRange, explorerCustomStart, explorerCustomEnd);
-  const explorerPreviousRange = previousRangeFromSeries(explorerSeries);
-  const explorerPreviousTotal = sumMetricForExplicitRange(explorerAccounts, explorerMetricKey, explorerPreviousRange.start, explorerPreviousRange.end);
-  const explorerCurrentTotal = Math.round(explorerSeries.reduce((sum, point) => sum + point.value, 0));
-  const explorerSummary = {
-    total: explorerCurrentTotal,
-    previousTotal: Math.round(explorerPreviousTotal),
-    delta: Math.round(explorerCurrentTotal - explorerPreviousTotal),
-    previousLabel: compactDateRange(explorerPreviousRange.start, explorerPreviousRange.end),
-    latest: explorerRows.slice().sort((a, b) => (insightDate(b.insight)?.getTime() || 0) - (insightDate(a.insight)?.getTime() || 0))[0]?.insight.metric_value ?? null,
-  };
-  const explorerPageLabel = props.workspace.pages.find((page) => page.id === explorerPageId)?.name || "selected page";
-  const explorerMetricLabel = explorerMetric ? formatMetricName(explorerMetric) : "selected metric";
-  const coverageDescription = coverageMode === "insights"
-    ? `Showing ${explorerMetricLabel} from ${explorerPageLabel}.`
-    : "Publishing footprint across connected and scheduled platforms.";
-  const selectedAccountPosts = selectedInsightAccount
-    ? filteredPosts.filter((row) => row.post.page_id === selectedInsightAccount.page_id && row.platform === selectedInsightAccount.platform)
-    : [];
-
   useEffect(() => {
-    setAccountPage(1);
-  }, [accountSearch, platformFilter, pageFilter, range, customStart, customEnd]);
+    setPostPageFilter((current) => current === "all" || props.workspace.pages.some((page) => page.id === current) ? current : "all");
+  }, [props.workspace.pages]);
 
-  useEffect(() => {
-    if (explorerPageId === null && props.workspace.pages.length) {
-      setExplorerPageId(props.workspace.pages[0].id);
-    }
-  }, [explorerPageId, props.workspace.pages]);
-
-  useEffect(() => {
-    if (!explorerMetric && metricOptions.length) {
-      setExplorerMetric(metricOptions[0]);
-    }
-  }, [explorerMetric, metricOptions]);
-
-  async function handleManualRefresh(): Promise<void> {
+  async function handleManualRefresh(accountId?: number): Promise<void> {
     setManualRefreshState("refreshing");
+    setReloadState("idle");
+    setManualRefreshMessage("Analytics refresh requested.");
     try {
-      await props.onRefreshInsights();
+      await props.onRefreshInsights(accountId, (status) => {
+        const progress = status.progress_total
+          ? ` (${status.progress_current}/${status.progress_total})`
+          : "";
+        setManualRefreshMessage(`${status.message || "Analytics refresh is running."}${progress}`);
+      }, { range, customStart, customEnd });
       setManualRefreshState("idle");
-    } catch {
+      setManualRefreshMessage("Analytics refresh finished. Showing saved database data.");
+      window.setTimeout(() => {
+        setManualRefreshMessage((current) =>
+          current === "Analytics refresh finished. Showing saved database data." ? "" : current,
+        );
+      }, 5000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Analytics refresh failed. Check diagnostics below.";
+      if (message.toLowerCase().includes("still running")) {
+        setManualRefreshState("partial");
+        setManualRefreshMessage(message);
+        return;
+      }
       setManualRefreshState("error");
+      setManualRefreshMessage(message);
+    }
+  }
+
+  async function handleReloadData(): Promise<void> {
+    setReloadState("loading");
+    setManualRefreshState("idle");
+    setManualRefreshMessage("Reloading saved analytics data from the database.");
+    try {
+      await props.onReloadData();
+      setReloadState("idle");
+      setManualRefreshMessage("Saved analytics data reloaded from the database.");
+      window.setTimeout(() => {
+        setManualRefreshMessage((current) =>
+          current === "Saved analytics data reloaded from the database." ? "" : current,
+        );
+      }, 3500);
+    } catch (error) {
+      setReloadState("error");
+      setManualRefreshMessage(error instanceof Error ? error.message : "Unable to reload saved analytics data.");
+    }
+  }
+
+  async function handleExportReport(): Promise<void> {
+    setExportState("exporting");
+    setManualRefreshState("idle");
+    setReloadState("idle");
+    setManualRefreshMessage("Updating the Google report.");
+    try {
+      await props.onExportReport();
+      setExportState("idle");
+      setManualRefreshMessage("Google report updated.");
+      window.setTimeout(() => {
+        setManualRefreshMessage((current) => current === "Google report updated." ? "" : current);
+      }, 3500);
+    } catch (error) {
+      setExportState("error");
+      setManualRefreshState("error");
+      setManualRefreshMessage(error instanceof Error ? error.message : "Unable to export the report.");
     }
   }
 
@@ -2696,22 +4303,20 @@ function AnalyticsPage(props: {
         actions={
           <>
             <Button disabled={manualRefreshState === "refreshing" || props.loading} icon="refresh" onClick={() => void handleManualRefresh()}>
-              {manualRefreshState === "refreshing" || props.loading ? "Refreshing..." : "Refresh insights"}
+              {manualRefreshState === "refreshing" ? "Refreshing..." : "Refresh insights"}
+            </Button>
+            <Button disabled={reloadState === "loading" || props.loading} icon="refresh" onClick={() => void handleReloadData()} variant="secondary">
+              {reloadState === "loading" ? "Reloading..." : "Reload data"}
+            </Button>
+            <Button onClick={() => setRawOpen(true)}>
+              Raw data
             </Button>
             <Button
-              onClick={() =>
-                exportAnalyticsReportAsCsv("mss-analytics-report.csv", {
-                  posted: props.workspace.posts.filter((post) => post.status === "posted").length,
-                  scheduled: props.workspace.posts.filter((post) => post.status === "scheduled").length,
-                  failed: props.workspace.posts.filter((post) => post.status === "failed").length,
-                  successRate: 0,
-                  postsInRange: filteredPosts.length,
-                  accounts: visibleAccounts,
-                })
-              }
+              disabled={exportState === "exporting"}
+              onClick={() => void handleExportReport()}
               variant="primary"
             >
-              Export report
+              {exportState === "exporting" ? "Exporting..." : "Export report"}
             </Button>
           </>
         }
@@ -2727,61 +4332,89 @@ function AnalyticsPage(props: {
         title="Analytics"
       />
 
-      <Card className="analytics-filter-card" title="Report filters">
-        <div className="analytics-filter-grid">
-          <Field label="Date range">
-            <select onChange={(event) => setRange(event.target.value as AnalyticsRange)} value={range}>
-              <option value="7d">7 days</option>
-              <option value="30d">30 days</option>
-              <option value="month">This month</option>
-              <option value="all">All time</option>
-              <option value="custom">Custom</option>
-            </select>
-          </Field>
-          <Field label="Page/client">
-            <select onChange={(event) => setPageFilter(event.target.value === "all" ? "all" : Number(event.target.value))} value={String(pageFilter)}>
-              <option value="all">All clients</option>
-              {props.workspace.pages.map((page) => <option key={page.id} value={page.id}>{page.name}</option>)}
-            </select>
-          </Field>
-          <Field label="Platform">
-            <select onChange={(event) => setPlatformFilter(event.target.value as "all" | "facebook" | "instagram")} value={platformFilter}>
-              <option value="all">All platforms</option>
-              <option value="facebook">Facebook</option>
-              <option value="instagram">Instagram</option>
-            </select>
-          </Field>
-          <Field label="Metric">
-            <select onChange={(event) => setMetricFilter(event.target.value)} value={metricFilter}>
-              {["views", "engagement", "followers", "reach", "visits", "media_count"].map((metric) => (
-                <option key={metric} value={metric}>{formatMetricName(metric)}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Account search">
-            <input onChange={(event) => setAccountSearch(event.target.value)} placeholder="Search account or client" value={accountSearch} />
-          </Field>
+      {manualRefreshMessage ? (
+        <div
+          className={`system-alert ${manualRefreshState === "error" || reloadState === "error" ? "system-alert-error" : ""}`}
+          role="status"
+        >
+          <Badge tone={manualRefreshState === "error" || reloadState === "error" ? "bad" : manualRefreshState === "refreshing" || manualRefreshState === "partial" || reloadState === "loading" ? "info" : "good"}>
+            {manualRefreshState === "refreshing" || manualRefreshState === "partial" ? "Analytics refresh" : reloadState === "loading" ? "Database reload" : "Status"}
+          </Badge>
+          <strong>{manualRefreshMessage}</strong>
         </div>
-        {range === "custom" ? (
-          <div className="inline-actions analytics-date-range">
-            <label><span>From</span><input onChange={(event) => setCustomStart(event.target.value)} type="date" value={customStart} /></label>
-            <label><span>To</span><input onChange={(event) => setCustomEnd(event.target.value)} type="date" value={customEnd} /></label>
-          </div>
-        ) : null}
-      </Card>
+      ) : null}
 
-      <section className="stats-grid analytics-executive-grid">
-        <StatCard helper="Across selected accounts" label="Total views" value={formatCompactNumber(totalViews)} />
-        <StatCard helper="Selected date range" label="Total engagement" value={formatCompactNumber(totalEngagement)} />
-        <StatCard helper="Latest available follower counts" label="Followers" value={formatCompactNumber(totalFollowers)} />
-        <StatCard helper={bestAccount?.label || "No account data yet"} label="Best account" value={bestAccount ? formatCompactNumber(bestAccount.value) : "-"} />
-        <StatCard helper={bestPost ? bestPost.caption.slice(0, 80) : "No platform post references yet"} label="Best post" value={bestPost ? formatCompactNumber((bestPost.views || 0) + (bestPost.engagement || 0)) : "-"} />
-        <StatCard helper="Accounts with warnings or missing setup" label="Needs attention" tone={visibleAccounts.some((account) => account.last_error || !account.ready) ? "warn" : "good"} value={String(visibleAccounts.filter((account) => account.last_error || !account.ready).length)} />
-      </section>
+      <SectionTabs
+        items={[
+          { value: "overview", label: "Overview", detail: "Filters, KPIs, and trend charts", count: visibleAccounts.length },
+          { value: "posts", label: "Posts", detail: "Post-level performance", count: filteredPosts.length },
+          { value: "accounts", label: "Accounts", detail: "Account snapshots", count: visibleAccounts.length },
+          { value: "diagnostics", label: "Diagnostics", detail: "Unavailable or errored metrics", count: visibleDiagnostics.length },
+        ]}
+        onChange={setView}
+        value={view}
+      />
+
+      {view === "overview" ? (
+        <>
+      <div className="analytics-report-builder">
+        <Card className="analytics-filter-card" title="Report filters">
+          <div className="analytics-filter-grid">
+            <Field label="Date range">
+              <select onChange={(event) => setRange(event.target.value as AnalyticsRange)} value={range}>
+                <option value="7d">7 days</option>
+                <option value="30d">30 days</option>
+                <option value="60d">60 days</option>
+                <option value="month">This month</option>
+                <option value="all">All time</option>
+                <option value="custom">Custom</option>
+              </select>
+            </Field>
+            <Field label="Page/client">
+              <select onChange={(event) => setPageFilter(event.target.value === "all" ? "all" : Number(event.target.value))} value={String(pageFilter)}>
+                <option value="all">All clients</option>
+                {props.workspace.pages.map((page) => <option key={page.id} value={page.id}>{page.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Platform">
+              <select onChange={(event) => setPlatformFilter(event.target.value as "all" | "facebook" | "instagram")} value={platformFilter}>
+                <option value="all">All platforms</option>
+                <option value="facebook">Facebook</option>
+                <option value="instagram">Instagram</option>
+              </select>
+            </Field>
+            <Field label="Metric">
+              <select onChange={(event) => setMetricFilter(event.target.value)} value={metricFilter}>
+                {["views", "engagement", "followers", "reach", "visits", "media_count"].map((metric) => (
+                  <option key={metric} value={metric}>{formatMetricName(metric)}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Account search">
+              <input onChange={(event) => setAccountSearch(event.target.value)} placeholder="Search account or client" value={accountSearch} />
+            </Field>
+          </div>
+          {range === "custom" ? (
+            <div className="inline-actions analytics-date-range">
+              <label><span>From</span><input onChange={(event) => setCustomStart(event.target.value)} type="date" value={customStart} /></label>
+              <label><span>To</span><input onChange={(event) => setCustomEnd(event.target.value)} type="date" value={customEnd} /></label>
+            </div>
+          ) : null}
+        </Card>
+
+        <section className="stats-grid analytics-executive-grid">
+          <StatCard helper="Across selected accounts" label="Total views" value={formatCompactNumber(totalViews)} />
+          <StatCard helper="Selected date range" label="Content interactions" value={formatCompactNumber(totalEngagement)} />
+          <StatCard helper="Latest available follower counts" label="Followers" value={formatCompactNumber(totalFollowers)} />
+          <StatCard helper="Facebook and Instagram accounts in scope" label="Accounts" value={formatCompactNumber(visibleAccounts.length)} />
+          <StatCard helper="Posts matching the report filters" label="Posts" value={formatCompactNumber(reportPosts.length)} />
+          <StatCard helper="Accounts with warnings or missing setup" label="Needs attention" tone={visibleAccounts.some((account) => account.last_error || !account.ready) ? "warn" : "good"} value={String(visibleAccounts.filter((account) => account.last_error || !account.ready).length)} />
+        </section>
+      </div>
 
       <div className="analytics-main-grid">
         <Card description={`${formatMetricName(metricFilter)} by day for the active filter set.`} title="Primary trend">
-          <MetricAreaChart data={trendSeries} label={formatMetricName(metricFilter)} />
+          <MetricAreaChart data={trendSeries} label={formatMetricName(metricFilter)} totalValue={selectedMetricTotal} />
         </Card>
         <Card description="Filtered Facebook vs Instagram comparison." title="Platform comparison">
           <MetricBarChart items={platformComparison} />
@@ -2790,323 +4423,223 @@ function AnalyticsPage(props: {
           <MetricBarChart items={accountComparison} />
         </Card>
       </div>
-
-      <div className="analytics-grid">
-        <Card title="Views over time">
-          <MetricLineChart data={viewsSeries} label="Views" />
-        </Card>
-        <Card title="Engagement over time">
-          <MetricLineChart data={engagementSeries} label="Engagement" tone="good" />
-        </Card>
-        <Card
-          actions={<Button onClick={() => setExplorerOpen(true)}>Open explorer</Button>}
-          className="platform-coverage-card"
-          description={coverageDescription}
-          title="Platform coverage"
-        >
-          {coverageMode === "insights" ? (
-            <ExplorerDisplay
-              bars={explorerBars}
-              display={explorerDisplay}
-              rows={explorerRows}
-              series={explorerSeries}
-              summary={explorerSummary}
-            />
-          ) : (
-            <button className="chart-card-button" onClick={() => setExplorerOpen(true)} type="button">
-              <MetricBarChart items={platformComparison} />
-              <span>Open explorer to choose a metric, account/page, date range, and display mode.</span>
-            </button>
-          )}
-        </Card>
-      </div>
-
-      {explorerOpen ? (
-        <Modal
-          description="Choose a page, metric, display mode, and date range. The selected data also renders inside Platform coverage."
-          footer={
-            <>
-              <Button
-                disabled={!explorerSeries.length && !explorerBars.length}
-                onClick={() =>
-                  explorerDisplay === "bar"
-                    ? exportChartAsSvg("mss-insight-export.svg", explorerMetric || "Insight export", explorerBars)
-                    : exportTimeSeriesAsSvg("mss-insight-export.svg", explorerMetric || "Insight export", explorerSeries)
-                }
-              >
-                Download image
-              </Button>
-              <Button
-                disabled={!explorerRows.length}
-                onClick={() => exportInsightsAsCsv("mss-insight-export.csv", explorerRows)}
-                variant="primary"
-              >
-                Download text
-              </Button>
-              <Button onClick={() => setExplorerOpen(false)} variant="secondary">
-                Close
-              </Button>
-            </>
-          }
-          onClose={() => setExplorerOpen(false)}
-          open={explorerOpen}
-          title="Insight explorer"
-        >
-          <div className="insight-explorer-controls">
-            <Field label="Page">
-              <select
-                onChange={(event) => {
-                  setExplorerPageId(Number(event.target.value));
-                  setCoverageMode("insights");
-                }}
-                value={String(explorerPageId ?? "")}
-              >
-                {props.workspace.pages.map((page) => (
-                  <option key={page.id} value={page.id}>
-                    {page.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Insight">
-              <select
-                onChange={(event) => {
-                  setExplorerMetric(event.target.value);
-                  setCoverageMode("insights");
-                }}
-                value={explorerMetric}
-              >
-                {metricOptions.map((metric) => (
-                  <option key={metric} value={metric}>
-                    {formatMetricName(metric)} ({metric})
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Platform">
-              <select
-                onChange={(event) => {
-                  setExplorerPlatform(event.target.value as "all" | "facebook" | "instagram");
-                  setCoverageMode("insights");
-                }}
-                value={explorerPlatform}
-              >
-                <option value="all">Facebook and Instagram</option>
-                <option value="facebook">Facebook only</option>
-                <option value="instagram">Instagram only</option>
-              </select>
-            </Field>
-            <Field label="Date range">
-              <select
-                onChange={(event) => {
-                  setExplorerRange(event.target.value as AnalyticsRange);
-                  setCoverageMode("insights");
-                }}
-                value={explorerRange}
-              >
-                <option value="7d">7 days</option>
-                <option value="30d">30 days</option>
-                <option value="month">This month</option>
-                <option value="all">All time</option>
-                <option value="custom">Custom</option>
-              </select>
-            </Field>
-            {explorerRange === "custom" ? (
-              <>
-                <Field label="From">
-                  <input
-                    onChange={(event) => setExplorerCustomStart(event.target.value)}
-                    type="date"
-                    value={explorerCustomStart}
-                  />
-                </Field>
-                <Field label="To">
-                  <input
-                    onChange={(event) => setExplorerCustomEnd(event.target.value)}
-                    type="date"
-                    value={explorerCustomEnd}
-                  />
-                </Field>
-              </>
-            ) : null}
-            <Field label="Display">
-              <select
-                onChange={(event) => {
-                  setExplorerDisplay(event.target.value as InsightDisplayMode);
-                  setCoverageMode("insights");
-                }}
-                value={explorerDisplay}
-              >
-                <option value="chart">Chart</option>
-                <option value="bar">Bar chart</option>
-                <option value="table">Table</option>
-                <option value="summary">Summary</option>
-                <option value="export">Export</option>
-              </select>
-            </Field>
-          </div>
-          <ExplorerDisplay
-            bars={explorerBars}
-            display={explorerDisplay}
-            rows={explorerRows}
-            series={explorerSeries}
-            summary={explorerSummary}
-          />
-        </Modal>
+        </>
       ) : null}
+
+      {view === "posts" ? (
+        <>
+      <Card className="analytics-filter-card" title="Post filters">
+        <div className="analytics-filter-grid">
+          <Field label="Date range">
+            <select onChange={(event) => setPostRange(event.target.value as AnalyticsRange)} value={postRange}>
+              <option value="7d">7 days</option>
+              <option value="30d">30 days</option>
+              <option value="60d">60 days</option>
+              <option value="month">This month</option>
+              <option value="all">All time</option>
+              <option value="custom">Custom</option>
+            </select>
+          </Field>
+          <Field label="Page/client">
+            <select onChange={(event) => setPostPageFilter(event.target.value === "all" ? "all" : Number(event.target.value))} value={String(postPageFilter)}>
+              <option value="all">All clients</option>
+              {props.workspace.pages.map((page) => <option key={page.id} value={page.id}>{page.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Platform">
+            <select onChange={(event) => setPostPlatformFilter(event.target.value as "all" | "facebook" | "instagram")} value={postPlatformFilter}>
+              <option value="all">All platforms</option>
+              <option value="facebook">Facebook</option>
+              <option value="instagram">Instagram</option>
+            </select>
+          </Field>
+          <Field label="Post search">
+            <input onChange={(event) => setPostSearch(event.target.value)} placeholder="Search caption or page" value={postSearch} />
+          </Field>
+        </div>
+        {postRange === "custom" ? (
+          <div className="inline-actions analytics-date-range">
+            <label><span>From</span><input onChange={(event) => setPostCustomStart(event.target.value)} type="date" value={postCustomStart} /></label>
+            <label><span>To</span><input onChange={(event) => setPostCustomEnd(event.target.value)} type="date" value={postCustomEnd} /></label>
+          </div>
+        ) : null}
+      </Card>
 
       <Card
         actions={
-          <div className="inline-actions">
-            <Badge tone="info">{visibleAccounts.length} accounts</Badge>
-            <Button disabled={accountPage <= 1} onClick={() => setAccountPage((current) => Math.max(1, current - 1))}>Previous</Button>
-            <Button disabled={accountPage >= totalAccountPages} onClick={() => setAccountPage((current) => Math.min(totalAccountPages, current + 1))}>Next</Button>
-          </div>
+          <>
+            <SortControl onChange={setPostSort} options={ANALYTICS_POST_SORT_OPTIONS} value={postSort} />
+            <Badge tone="info">{filteredPosts.length} posts</Badge>
+          </>
         }
-        description="Compact account performance. Select a row for drilldown."
-        title="Connected account insights"
+        title="Posts"
       >
-        {visibleAccounts.length ? (
-          <ResponsiveTable
-            columns={[
-              { key: "account", label: "Account", render: (account) => <strong>{account.account_name || account.page_name || `${account.platform} account`}</strong> },
-              { key: "platform", label: "Platform", render: (account) => <Badge tone={account.platform === "instagram" ? "good" : "info"}>{formatMetricName(account.platform)}</Badge> },
-              { key: "page", label: "Client", render: (account) => account.page_name || "Unassigned" },
-              { key: "followers", label: "Followers", render: (account) => formatCompactNumber(accountMetricValue(account, "followers", range, customStart, customEnd)) },
-              { key: "views", label: "Views", render: (account) => formatCompactNumber(accountMetricValue(account, "views", range, customStart, customEnd)) },
-              { key: "engagement", label: "Engagement", render: (account) => formatCompactNumber(accountMetricValue(account, "engagement", range, customStart, customEnd)) },
-              { key: "refreshed", label: "Last refreshed", render: (account) => account.last_refreshed_at ? formatDateTime(account.last_refreshed_at) : "Not yet" },
-              { key: "state", label: "State", render: (account) => <Badge tone={account.last_error ? "warn" : account.ready ? "good" : "bad"}>{account.last_error ? "Warning" : account.ready ? "Ready" : "Needs setup"}</Badge> },
-              { key: "actions", label: "Actions", render: (account) => <Button onClick={() => { setSelectedInsightAccountId(account.id); setAccountTab("overview"); }} variant="ghost">Details</Button> },
-            ]}
-            getKey={(account) => account.id}
-            items={pagedAccounts}
-          />
-        ) : (
-          <EmptyState
-            description="Connect Facebook or Instagram accounts, then refresh insights. Missing permissions and empty API responses will show here without breaking the page."
-            title="No insight accounts"
-          />
-        )}
-        <p className="table-footnote">Page {accountPage} of {totalAccountPages}. Showing up to {accountPageSize} accounts at a time.</p>
+        <AnalyticsPostGrid rows={sortedFilteredPosts} />
       </Card>
+        </>
+      ) : null}
 
-      <Card description="Post-level reporting starts with saved platform post/media IDs. Metrics fill in after platform post insights are available." title="Top posts">
-        <ResponsiveTable
-          columns={[
-            { key: "post", label: "Post", render: (row) => (
-              <div className="top-post-cell">
-                {row.thumbnail ? <img alt="" src={row.thumbnail} /> : <span className="post-thumb-placeholder" />}
-                <div><strong>{row.caption.slice(0, 84)}</strong><small>{row.pageName}</small></div>
-              </div>
-            ) },
-            { key: "platform", label: "Platform", render: (row) => <Badge tone={row.platform === "instagram" ? "good" : "info"}>{formatMetricName(row.platform)}</Badge> },
-            { key: "date", label: "Published", render: (row) => row.publishedAt ? formatDateOnly(row.publishedAt) : "No date" },
-            { key: "views", label: "Views", render: (row) => row.state === "missing_reference" ? "No platform post reference saved." : formatCompactNumber(row.views) },
-            { key: "reach", label: "Reach", render: (row) => row.state === "missing_reference" ? "-" : formatCompactNumber(row.reach) },
-            { key: "engagement", label: "Engagement", render: (row) => row.state === "missing_reference" ? "-" : formatCompactNumber(row.engagement) },
-            { key: "comments", label: "Comments", render: (row) => formatCompactNumber(row.comments) },
-            { key: "shares", label: "Shares", render: (row) => formatCompactNumber(row.shares) },
-            { key: "link", label: "Permalink", render: (row) => row.permalink ? <a href={row.permalink} rel="noreferrer" target="_blank">Open</a> : "-" },
-          ]}
-          getKey={(row) => row.id}
-          items={filteredPosts.slice(0, 10)}
-        />
-      </Card>
-
-      <Card
-        actions={<Button onClick={() => setRawOpen((current) => !current)}>{rawOpen ? "Hide raw data" : "View raw data"}</Button>}
-        description="Hidden debug/export view. It respects the active dashboard filters."
-        title="Raw data"
-      >
-        {rawOpen ? (
-          <div className="raw-data-panel">
-            <Button
-              disabled={!explorerRows.length}
-              onClick={() => exportInsightsAsCsv("mss-raw-insights.csv", explorerRows)}
-              variant="primary"
-            >
-              Export filtered raw CSV
-            </Button>
-            <InsightRowsTable rows={explorerRows.slice(0, 150)} />
-          </div>
-        ) : (
-          <p className="settings-note">Raw insight rows are hidden by default to keep the report readable.</p>
-        )}
-      </Card>
-
-      {selectedInsightAccount ? (
-        <div className="analytics-drawer-backdrop" role="presentation">
-          <aside aria-label="Account analytics detail" className="analytics-drawer">
-            <div className="modal-header">
-              <div>
-                <h2>{selectedInsightAccount.account_name || selectedInsightAccount.page_name || "Selected account"}</h2>
-                <p>{formatMetricName(selectedInsightAccount.platform)} - {selectedInsightAccount.page_name || "Unassigned client"}</p>
-              </div>
-              <IconButton icon="close" label="Close account details" onClick={() => setSelectedInsightAccountId(null)} />
-            </div>
-            <div className="drawer-summary-grid">
-              <StatCard helper="Selected range" label="Views" value={formatCompactNumber(accountMetricValue(selectedInsightAccount, "views", range, customStart, customEnd))} />
-              <StatCard helper="Selected range" label="Engagement" value={formatCompactNumber(accountMetricValue(selectedInsightAccount, "engagement", range, customStart, customEnd))} />
-              <StatCard helper="Latest value" label="Followers" value={formatCompactNumber(accountMetricValue(selectedInsightAccount, "followers", range, customStart, customEnd))} />
-            </div>
-            <div className="segmented-control drawer-tabs" aria-label="Account detail tabs">
-              {["overview", "trends", "posts", "raw", "errors"].map((tab) => (
-                <button
-                  aria-pressed={accountTab === tab}
-                  className={accountTab === tab ? "active" : ""}
-                  key={tab}
-                  onClick={() => setAccountTab(tab as typeof accountTab)}
-                  type="button"
-                >
-                  {formatMetricName(tab)}
-                </button>
-              ))}
-            </div>
-            {accountTab === "overview" ? (
-              <div className="drawer-panel">
-                <div className="detail-list">
-                  <div><span>Connection</span><strong>{selectedInsightAccount.ready ? "Ready" : "Needs setup"}</strong></div>
-                  <div><span>Last refreshed</span><strong>{selectedInsightAccount.last_refreshed_at ? formatDateTime(selectedInsightAccount.last_refreshed_at) : "Not yet"}</strong></div>
-                  <div><span>Object ID</span><strong>{selectedInsightAccount.page_id_external || "Missing"}</strong></div>
-                </div>
-                {selectedInsightAccount.last_error ? <p className="inline-warning">{selectedInsightAccount.last_error}</p> : null}
-              </div>
-            ) : null}
-            {accountTab === "trends" ? <MetricAreaChart data={selectedAccountSeries} label={formatMetricName(metricFilter)} /> : null}
-            {accountTab === "posts" ? (
-              selectedAccountPosts.length ? (
+      {view === "accounts" ? (
+        <div className="focus-grid">
+          <Card
+            actions={<SortControl onChange={setAccountSort} options={ANALYTICS_ACCOUNT_SORT_OPTIONS} value={accountSort} />}
+            title="Account snapshots"
+          >
+            <div className="analytics-account-table">
+              {visibleAccounts.length ? (
                 <ResponsiveTable
                   columns={[
-                    { key: "caption", label: "Post", render: (row) => <strong>{row.caption.slice(0, 80)}</strong> },
-                    { key: "date", label: "Published", render: (row) => row.publishedAt ? formatDateOnly(row.publishedAt) : "-" },
-                    { key: "reference", label: "Reference", render: (row) => row.platformPostId || "No platform post reference saved." },
-                    { key: "link", label: "Permalink", render: (row) => row.permalink ? <a href={row.permalink} rel="noreferrer" target="_blank">Open</a> : "-" },
+                    {
+                      key: "account",
+                      label: "Account",
+                      render: (account) => (
+                        <span className="account-title-cell">
+                          <strong>{account.account_name || account.page_name || formatMetricName(account.platform)}</strong>
+                          <small>{account.page_name || "Unassigned page"}</small>
+                        </span>
+                      ),
+                    },
+                    {
+                      key: "platform",
+                      label: "Platform",
+                      render: (account) => <Badge tone={account.platform === "instagram" ? "good" : "info"}>{formatMetricName(account.platform)}</Badge>,
+                    },
+                    {
+                      key: "views",
+                      label: "Views",
+                      render: (account) => <strong className="metric-number">{formatCompactNumber(accountMetricValue(account, "views", range, customStart, customEnd))}</strong>,
+                    },
+                    {
+                      key: "engagement",
+                      label: "Interactions",
+                      render: (account) => <strong className="metric-number">{formatCompactNumber(accountMetricValue(account, "engagement", range, customStart, customEnd))}</strong>,
+                    },
+                    {
+                      key: "followers",
+                      label: "Followers",
+                      render: (account) => <strong className="metric-number">{formatCompactNumber(accountMetricValue(account, "followers", range, customStart, customEnd))}</strong>,
+                    },
+                    {
+                      key: "state",
+                      label: "State",
+                      render: (account) => (
+                        <Badge tone={account.last_error || !account.ready ? "warn" : "good"}>
+                          {account.last_error || !account.ready ? "Check" : "Ready"}
+                        </Badge>
+                      ),
+                    },
+                    {
+                      key: "action",
+                      label: "",
+                      render: (account) => (
+                        <Button disabled={manualRefreshState === "refreshing"} onClick={() => void handleManualRefresh(account.id)}>
+                          Refresh
+                        </Button>
+                      ),
+                    },
                   ]}
-                  getKey={(row) => row.id}
-                  items={selectedAccountPosts.slice(0, 20)}
+                  getKey={(account) => account.id}
+                  items={visibleAccounts}
                 />
-              ) : <EmptyState description="No post references match this account and date range." title="No account posts" />
-            ) : null}
-            {accountTab === "raw" ? (
-              <InsightRowsTable rows={selectedAccountInsights.map((insight) => ({ account: selectedInsightAccount, insight }))} />
-            ) : null}
-            {accountTab === "errors" ? (
-              <div className="drawer-panel">
-                {selectedInsightAccount.last_error ? (
-                  <p className="inline-warning">{selectedInsightAccount.last_error}</p>
-                ) : (
-                  <EmptyState description="No current account-level insight errors are saved." title="No errors" />
-                )}
-              </div>
-            ) : null}
-            <div className="modal-footer">
-              <Button onClick={() => exportChartAsSvg(`mss-${selectedInsightAccount.id}-insights.svg`, "Account insights", selectedAccountChart)}>Download image</Button>
-              <Button onClick={() => exportInsightsAsCsv(`mss-${selectedInsightAccount.id}-insights.csv`, selectedAccountInsights.map((insight) => ({ account: selectedInsightAccount, insight })))} variant="primary">Download CSV</Button>
+              ) : (
+                <EmptyState
+                  description="No accounts match the active page, platform, and search filters."
+                  title="No matching accounts"
+                />
+              )}
             </div>
-          </aside>
+          </Card>
+          <Card description="Top accounts for the currently selected metric." title="Metric ranking">
+            <MetricBarChart items={accountComparison} />
+          </Card>
         </div>
       ) : null}
+
+      {view === "diagnostics" ? (
+      <Card
+        actions={<SortControl onChange={setDiagnosticSort} options={DIAGNOSTIC_SORT_OPTIONS} value={diagnosticSort} />}
+        description="Meta metrics that returned errors, no values, or unavailable responses during refresh. These are shown separately so report totals stay clean."
+        title="Insight diagnostics"
+      >
+        {visibleDiagnostics.length ? (
+          <InsightDiagnosticsTable rows={visibleDiagnostics.slice(0, 50)} />
+        ) : (
+          <EmptyState
+            description="No Facebook or Instagram insight errors are saved for the active report filters."
+            title="No diagnostics"
+          />
+        )}
+      </Card>
+      ) : null}
+
+      <Modal
+        description="Raw insight rows for the active report filters."
+        footer={
+          <>
+            <Button disabled={!rawInsightRows.length} onClick={() => exportInsightsAsCsv("mss-raw-insights.csv", rawInsightRows)} variant="primary">
+              Export filtered raw CSV
+            </Button>
+            <Button onClick={() => setRawOpen(false)} variant="secondary">
+              Close
+            </Button>
+          </>
+        }
+        onClose={() => setRawOpen(false)}
+        open={rawOpen}
+        title="Raw data"
+      >
+        <div className="raw-data-panel">
+          <InsightRowsTable rows={rawInsightRows.slice(0, 150)} />
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+function AnalyticsPostGrid(props: { rows: AnalyticsPostRow[] }) {
+  if (!props.rows.length) {
+    return (
+      <EmptyState
+        description="No Facebook or Instagram posts match the selected page, platform, and date range."
+        title="No posts"
+      />
+    );
+  }
+
+  return (
+    <div className="analytics-post-grid">
+      {props.rows.map((row) => (
+        <article className="analytics-post-card" key={row.id}>
+          <div className="analytics-post-media">
+            <LazyImage
+              alt={row.caption || row.pageName || "Post media"}
+              fallback={<span className="post-thumb-placeholder" />}
+              src={row.thumbnail}
+            />
+          </div>
+          <div className="analytics-post-body">
+            <div className="analytics-post-topline">
+              <Badge tone={row.platform === "instagram" ? "good" : "info"}>{formatMetricName(row.platform)}</Badge>
+              <span>{row.publishedAt ? formatDateOnly(row.publishedAt) : "No date"}</span>
+            </div>
+            <h3>{row.caption.slice(0, 140) || "No caption saved."}</h3>
+            <p>{row.pageName}</p>
+            <div className="analytics-post-metrics">
+              <span><strong>{formatCompactNumber(row.views)}</strong><small>Views</small></span>
+              <span><strong>{formatCompactNumber(row.reach)}</strong><small>Reach</small></span>
+              <span><strong>{formatCompactNumber(row.engagement)}</strong><small>Interactions</small></span>
+              <span><strong>{formatCompactNumber(row.comments)}</strong><small>Comments</small></span>
+              <span><strong>{formatCompactNumber(row.shares)}</strong><small>Shares</small></span>
+            </div>
+            <div className="analytics-post-footer">
+              <Badge tone={row.state === "ready" ? "good" : row.state === "no_metrics" ? "warn" : "bad"}>
+                {row.state === "ready" ? "Metrics ready" : row.state === "no_metrics" ? "No metrics yet" : "Missing post ID"}
+              </Badge>
+              {row.permalink ? <a href={row.permalink} rel="noreferrer" target="_blank">Open post</a> : <span>No permalink</span>}
+            </div>
+          </div>
+        </article>
+      ))}
     </div>
   );
 }
@@ -3117,12 +4650,14 @@ function ActivityPage(props: {
   query: string;
 }) {
   const [viewFilter, setViewFilter] = useState<"all" | "failed" | "manual" | "scheduled" | "planner">("all");
+  const [activitySort, setActivitySort] = useState<ActivitySort>("date-desc");
   const allEntries = [
     ...props.workspace.posts.map((post) => ({
       id: `post-${post.id}`,
       title: `Post #${post.id} ${post.status}`,
       detail: post.content || "No post content saved.",
       time: formatDateTime(post.posted_at || post.scheduled_time || post.created_at),
+      sortAt: dateSortValue(post.posted_at || post.scheduled_time || post.created_at),
       actor: post.page_name || "Unknown page",
       tone: postTone(post.status),
       kind: "post" as const,
@@ -3133,9 +4668,10 @@ function ActivityPage(props: {
       const status = rowStatus(row, props.planning?.job_color_rules.required_to_schedule || READY_COLOR);
       return {
         id: `row-${row.id}`,
-        title: `Planner row ${status.label}`,
-        detail: row.theme || row.post_copy || "Planning row updated.",
+        title: `Draft ${status.label}`,
+        detail: row.theme || row.post_copy || "Draft updated.",
         time: formatDateTime(row.updated_at),
+        sortAt: dateSortValue(row.updated_at),
         actor: row.designer || props.planning?.page.name || "Planner",
         tone: status.tone,
         kind: "planner" as const,
@@ -3144,8 +4680,8 @@ function ActivityPage(props: {
       };
     }) || []),
   ];
-  const entries = allEntries
-    .filter((item) => {
+  const entries = sortActivityEntries(
+    allEntries.filter((item) => {
       if (viewFilter === "failed") {
         return item.status === "failed";
       }
@@ -3160,8 +4696,9 @@ function ActivityPage(props: {
       }
       return true;
     })
-    .filter((item) => matchesQuery([item.title, item.detail, item.actor], props.query))
-    .slice(0, 20);
+      .filter((item) => matchesQuery([item.title, item.detail, item.actor], props.query)),
+    activitySort,
+  ).slice(0, 20);
   const savedViews: Array<{ label: string; value: typeof viewFilter }> = [
     { label: "All activity", value: "all" },
     { label: "Failed publishing", value: "failed" },
@@ -3173,15 +4710,17 @@ function ActivityPage(props: {
   return (
     <div className="page-stack">
       <PageHeader
-        description="Recent posts and planner updates from the API."
         eyebrow="Workspace history"
         title="Activity"
       />
       <div className="activity-layout">
-        <Card description="Most recent saved post and planner movement." title="Recent activity">
+        <Card
+          actions={<SortControl onChange={setActivitySort} options={ACTIVITY_SORT_OPTIONS} value={activitySort} />}
+          title="Recent activity"
+        >
           {entries.length ? <ActivityFeed items={entries} /> : <EmptyState description="No activity matches your search." title="No activity found" />}
         </Card>
-        <Card description="Useful saved views for operational reviews." title="Audit views">
+        <Card title="Audit views">
           <div className="saved-view-list">
             {savedViews.map((view) => (
               <button
@@ -3209,21 +4748,27 @@ function NotificationsPage(props: {
   onDismiss: (id: string) => void;
   onDismissAll: () => void;
 }) {
-  const items = props.notifications.filter((item) =>
-    matchesQuery([item.title, item.detail, item.priority], props.query),
+  const [notificationSort, setNotificationSort] = useState<NotificationSort>("priority-desc");
+  const items = sortNotifications(
+    props.notifications.filter((item) =>
+      matchesQuery([item.title, item.detail, item.priority], props.query),
+    ),
+    notificationSort,
   );
 
   return (
     <div className="page-stack">
       <PageHeader
         actions={<Button onClick={props.onDismissAll} variant="primary">Mark all handled</Button>}
-        description="Prioritized alerts derived from failed posts, planner state, tokens, and integration readiness."
         eyebrow="Inbox"
         meta={<Badge tone={items.length ? "bad" : "good"}>{items.length} active</Badge>}
         title="Notifications"
       />
       <div className="notification-layout">
-        <Card title="Priority inbox">
+        <Card
+          actions={<SortControl onChange={setNotificationSort} options={NOTIFICATION_SORT_OPTIONS} value={notificationSort} />}
+          title="Priority inbox"
+        >
           <div className="notification-list">
             {items.length ? (
               items.map((item) => (
@@ -3247,7 +4792,7 @@ function NotificationsPage(props: {
             )}
           </div>
         </Card>
-        <Card description="Where alerts are coming from." title="Alert sources">
+        <Card title="Alert sources">
           <BarChart
             items={[
               { label: "Planner", value: props.notifications.filter((item) => item.source === "planner").length, tone: "warn" },
@@ -3274,6 +4819,7 @@ function SettingsPage(props: {
 }) {
   const [draft, setDraft] = useState<GlobalSettingsPayload | null>(props.settings);
   const [saveState, setSaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
+  const [view, setView] = useState<"workspace" | "appearance" | "automation" | "tokens" | "team" | "integrations">("workspace");
   const metaTokenStatus = draft?.meta_global?.configured
     ? `${draft.meta_global.status}${draft.meta_global.time_left_text ? ` - ${draft.meta_global.time_left_text} left` : ""}`
     : "No global Meta token saved";
@@ -3368,7 +4914,41 @@ function SettingsPage(props: {
           />
         </Card>
       ) : (
+        <>
+        <section className="settings-summary-strip" aria-label="Settings summary">
+          <div>
+            <span>Resolved theme</span>
+            <strong>{props.theme}</strong>
+          </div>
+          <div>
+            <span>Team members</span>
+            <strong>{props.users.length}</strong>
+          </div>
+          <div>
+            <span>Meta token</span>
+            <strong>{draft.meta_global?.configured ? "Configured" : "Missing"}</strong>
+          </div>
+          <div>
+            <span>Live posting</span>
+            <strong>{draft.live_posting_enabled === "true" ? "Enabled" : "Disabled"}</strong>
+          </div>
+        </section>
+
+        <SectionTabs
+          items={[
+            { value: "workspace", label: "Workspace", detail: "Name, timezone, routing" },
+            { value: "appearance", label: "Appearance", detail: "Themes and visual mode" },
+            { value: "automation", label: "Automation", detail: "Scheduler and posting flags" },
+            { value: "tokens", label: "Tokens", detail: "Meta and platform credentials" },
+            { value: "team", label: "Team", detail: "Users and roles", count: props.users.length },
+            { value: "integrations", label: "Integrations", detail: "Connection health" },
+          ]}
+          onChange={setView}
+          value={view}
+        />
+
         <div className="settings-layout">
+          {view === "workspace" ? (
           <Card description="Global defaults saved in the database." title="Workspace defaults">
             <div className="form-grid">
               <Field label="Workspace name">
@@ -3403,27 +4983,35 @@ function SettingsPage(props: {
               </Field>
             </div>
           </Card>
+          ) : null}
 
+          {view === "appearance" ? (
           <Card description="Theme preference is saved on this browser and applied immediately." title="Appearance">
             <div className="theme-option-grid" role="radiogroup" aria-label="Theme preference">
               {[
                 {
                   value: "system",
                   title: "System",
-                  description: "Follow this device automatically.",
-                  swatches: ["#ffffff", "#111827"],
+                  description: "Follow this device's light or dark mode.",
+                  swatches: ["#fffdfd", "#10141d", "#dc5a72", "#6ea8fe"],
                 },
                 {
                   value: "light",
                   title: "Light",
-                  description: "Bright SaaS workspace for daytime use.",
-                  swatches: ["#f8fafc", "#2563eb"],
+                  description: "Soft white workspace with muted red controls.",
+                  swatches: ["#fffdfd", "#f4eef1", "#dc5a72", "#8f3349"],
                 },
                 {
                   value: "dark",
                   title: "Dark",
-                  description: "Charcoal workspace with higher contrast.",
-                  swatches: ["#070706", "#f5c542"],
+                  description: "Charcoal command center with vivid accents.",
+                  swatches: ["#080b10", "#151c28", "#6ea8fe", "#ff477e"],
+                },
+                {
+                  value: "dark-gold",
+                  title: "Dark gold",
+                  description: "Black and gold interface with selective red.",
+                  swatches: ["#070604", "#18130b", "#d8b45a", "#bd1326"],
                 },
               ].map((option) => (
                 <button
@@ -3454,12 +5042,14 @@ function SettingsPage(props: {
               Current resolved theme: <strong>{props.theme}</strong>
             </p>
           </Card>
+          ) : null}
 
+          {view === "automation" ? (
           <Card description="Automation flags saved in app settings." title="Automation">
             <div className="form-stack">
               <Toggle
                 checked={draft.auto_schedule === "true"}
-                description="Let the scheduler create queued posts from ready planner rows."
+                description="Let the scheduler queue ready post drafts."
                 label="Auto schedule"
                 onChange={(checked) =>
                   setDraft((current) => current && { ...current, auto_schedule: String(checked) })
@@ -3483,7 +5073,9 @@ function SettingsPage(props: {
               />
             </div>
           </Card>
+          ) : null}
 
+          {view === "tokens" ? (
           <Card
             description="Paste a Meta user token here. On save, the backend exchanges it for a long-lived token and propagates it to connected Facebook and Instagram accounts."
             title="Meta token"
@@ -3530,7 +5122,9 @@ function SettingsPage(props: {
               <p><strong>Instagram Login option:</strong> use <code>instagram_business_basic</code> and <code>instagram_business_manage_insights</code>.</p>
             </div>
           </Card>
+          ) : null}
 
+          {view === "team" ? (
           <Card description="Users saved in the auth store." title="Team access">
             <ResponsiveTable
               columns={[
@@ -3543,7 +5137,9 @@ function SettingsPage(props: {
               items={props.users}
             />
           </Card>
+          ) : null}
 
+          {view === "integrations" ? (
           <Card description="Global tokens and connected account readiness." title="Integration health">
             <div className="integration-grid">
               <article>
@@ -3566,7 +5162,9 @@ function SettingsPage(props: {
               </article>
             </div>
           </Card>
+          ) : null}
         </div>
+        </>
       )}
     </div>
   );
@@ -3592,7 +5190,7 @@ function HelpPage(props: {
       },
     },
     {
-      label: "Create planner row",
+      label: "Create post",
       action: () => {
         props.onSectionOpen("planner");
         props.onOpenModal("post");
@@ -3611,20 +5209,19 @@ function HelpPage(props: {
         props.onOpenModal("account");
       },
     },
-    { title: "Plan calendar", detail: "Create dated rows and review upcoming work", action: () => props.onSectionOpen("planner") },
+    { title: "Plan calendar", detail: "Create posts and review upcoming work", action: () => props.onSectionOpen("planner") },
     { title: "Recover failure", detail: "Find failed posts and retry after fixing the cause", action: () => props.onSectionOpen("notifications") },
   ];
 
   return (
     <div className="page-stack">
       <PageHeader
-        description="Guides, system status, and operational support context."
         eyebrow="Guidance"
         actions={<Button onClick={props.onContactSupport} variant="primary">Contact support</Button>}
         title="Help"
       />
       <div className="help-grid">
-        <Card description="Short, task-based guides for common workflows." title="Guides">
+        <Card title="Guides">
           <div className="saved-view-list">
             {guideActions.map((guide) => (
               <button key={guide.label} onClick={guide.action} type="button">
@@ -3634,12 +5231,12 @@ function HelpPage(props: {
             ))}
           </div>
         </Card>
-        <Card description="A quick readiness path for setting up a usable workspace." title="Onboarding checklist">
+        <Card title="Onboarding checklist">
           <div className="checklist">
             {[
               ["Create a client page", hasPages],
               ["Connect at least one account", hasAccounts],
-              ["Import or create planner rows", hasPlanner],
+              ["Import or create post drafts", hasPlanner],
               ["Schedule the first post", hasScheduled],
             ].map(([label, complete]) => (
               <div className={complete ? "checklist-item checklist-item-complete" : "checklist-item"} key={String(label)}>
@@ -3651,7 +5248,7 @@ function HelpPage(props: {
         </Card>
       </div>
       <div className="help-grid">
-        <Card description="Fast routes to the workflows teams use most." title="Common workflows">
+        <Card title="Common workflows">
           <div className="quick-action-grid">
             {workflowActions.map((workflow) => (
               <button key={workflow.title} onClick={workflow.action} type="button">
@@ -3664,7 +5261,7 @@ function HelpPage(props: {
             ))}
           </div>
         </Card>
-        <Card description="Current backend state from the scheduler API." title="System status">
+        <Card title="System status">
           <div className="detail-list">
             <div>
               <span>Scheduler</span>
@@ -3685,10 +5282,81 @@ function HelpPage(props: {
   );
 }
 
+function LazyImage(props: {
+  src: string | null;
+  alt: string;
+  className?: string;
+  fallback?: React.ReactNode;
+}) {
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const resolvedSrc = props.src ? normalizeMediaSrc(props.src) : null;
+  const [shouldLoad, setShouldLoad] = useState(false);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    setShouldLoad(false);
+    setFailedSrc(null);
+  }, [resolvedSrc]);
+
+  useEffect(() => {
+    if (!resolvedSrc || failedSrc === resolvedSrc) {
+      return;
+    }
+    const node = imageRef.current;
+    if (!node || !("IntersectionObserver" in window)) {
+      setShouldLoad(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setShouldLoad(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "500px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [failedSrc, resolvedSrc]);
+
+  if (!resolvedSrc || failedSrc === resolvedSrc) {
+    return <>{props.fallback || <span className="post-thumb-placeholder" />}</>;
+  }
+
+  return (
+    <img
+      alt={props.alt}
+      className={props.className}
+      decoding="async"
+      loading="lazy"
+      onError={() => setFailedSrc(resolvedSrc)}
+      ref={imageRef}
+      src={shouldLoad ? resolvedSrc : undefined}
+    />
+  );
+}
+
 function MediaThumb(props: { src: string | null; alt: string; size?: "normal" | "large" }) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const resolvedSrc = props.src ? normalizeMediaSrc(props.src) : null;
+  useEffect(() => {
+    setFailedSrc(null);
+  }, [resolvedSrc]);
+  const imageSrc = resolvedSrc && failedSrc !== resolvedSrc ? resolvedSrc : LOGO_SRC;
   return (
     <div className={props.size === "large" ? "media-thumb media-thumb-large" : "media-thumb"}>
-      {props.src ? <img alt={props.alt} src={props.src} /> : <img alt="MSS logo" src={LOGO_SRC} />}
+      <img
+        alt={resolvedSrc && failedSrc !== resolvedSrc ? props.alt : "MSS logo"}
+        decoding="async"
+        loading="lazy"
+        onError={() => {
+          if (resolvedSrc) {
+            setFailedSrc(resolvedSrc);
+          }
+        }}
+        src={imageSrc}
+      />
     </div>
   );
 }
@@ -3739,11 +5407,67 @@ function PlannerEventRow(props: { event: PlannerEvent; action?: React.ReactNode 
   );
 }
 
+function PlannerDraftRow(props: {
+  row: PlanningRowRecord;
+  status: { label: string; tone: "neutral" | "good" | "warn" | "bad" | "info" };
+  canManagePlanning: boolean;
+  onDuplicateRow: (row: PlanningRowRecord) => Promise<void>;
+  onPublishRow: (row: PlanningRowRecord) => Promise<void>;
+  onSchedule: (row: PlanningRowRecord) => Promise<void>;
+}) {
+  const mediaUrl = firstPlanningRowMedia(props.row);
+  const dateLabel = parseRowDate(props.row) || "No date";
+  const timeLabel = props.row.time_value || "No time";
+
+  return (
+    <article className="planner-row planner-draft-row">
+      <div className="planner-time">
+        <span>Draft {props.row.row_order}</span>
+        <small>{dateLabel}</small>
+        <small>{timeLabel}</small>
+      </div>
+      <div className="planner-content">
+        <div className="planner-event-title">
+          <MediaThumb alt={props.row.theme || "Draft media"} src={mediaUrl} />
+          <div>
+            <strong>{props.row.theme || props.row.job_nr || "Untitled draft"}</strong>
+            <span>{props.row.post_copy || "No post copy saved yet."}</span>
+          </div>
+        </div>
+        <div className="chip-row">
+          <span className="chip">{props.row.linked_accounts || "No accounts"}</span>
+          {props.row.creative_media_count ? <span className="chip">{props.row.creative_media_count} media</span> : null}
+          {props.row.designer ? <span className="chip">{props.row.designer}</span> : null}
+        </div>
+      </div>
+      <div className="planner-row-actions">
+        <Badge tone={props.status.tone}>{props.status.label}</Badge>
+        {props.canManagePlanning ? (
+          <>
+            <Button onClick={() => props.onPublishRow(props.row)} variant="primary">
+              Publish
+            </Button>
+            <Button onClick={() => props.onSchedule(props.row)} variant="ghost">
+              Schedule
+            </Button>
+            <Button onClick={() => props.onDuplicateRow(props.row)} variant="ghost">
+              Duplicate
+            </Button>
+          </>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
 function PlannerEventActions(props: {
   event: PlannerEvent;
+  canManagePlanning: boolean;
   onPreview: (event: PlannerEvent) => void;
   onDuplicateRow: (row: PlanningRowRecord) => Promise<void>;
+  onPublishRow: (row: PlanningRowRecord) => Promise<void>;
   onDeletePost: (post: PostRecord) => Promise<void>;
+  onManualOpen: (post: PostRecord) => void;
   onManualComplete: (post: PostRecord) => Promise<void>;
   onRetryPost: (post: PostRecord) => Promise<void>;
   onSchedule: (row: PlanningRowRecord) => Promise<void>;
@@ -3757,22 +5481,27 @@ function PlannerEventActions(props: {
       <Button onClick={() => props.onPreview(event)} variant="ghost">
         Preview
       </Button>
-      {event.row && !event.row.scheduled_post_id && !event.row.is_non_actionable ? (
-        <Button onClick={() => props.onSchedule(event.row as PlanningRowRecord)} variant="ghost">
-          Schedule
-        </Button>
+      {props.canManagePlanning && event.row && !event.row.scheduled_post_id && !event.row.is_non_actionable ? (
+        <>
+          <Button onClick={() => props.onPublishRow(event.row as PlanningRowRecord)} variant="primary">
+            Publish
+          </Button>
+          <Button onClick={() => props.onSchedule(event.row as PlanningRowRecord)} variant="ghost">
+            Schedule
+          </Button>
+        </>
       ) : null}
-      {event.row ? (
+      {props.canManagePlanning && event.row ? (
         <Button onClick={() => props.onDuplicateRow(event.row as PlanningRowRecord)} variant="ghost">
           Duplicate
         </Button>
       ) : null}
-      {isManualPending && event.post ? (
-        <Button onClick={() => props.onManualComplete(event.post as PostRecord)} variant="ghost">
-          Mark posted
+      {props.canManagePlanning && isManualPending && event.post ? (
+        <Button onClick={() => props.onManualOpen(event.post as PostRecord)} variant="ghost">
+          LinkedIn
         </Button>
       ) : null}
-      {isFailed && event.post ? (
+      {props.canManagePlanning && isFailed && event.post ? (
         <>
           <Button onClick={() => props.onPreview(event)} variant="ghost">
             View error
@@ -3782,7 +5511,7 @@ function PlannerEventActions(props: {
           </Button>
         </>
       ) : null}
-      {event.post ? (
+      {props.canManagePlanning && event.post ? (
         <Button onClick={() => props.onDeletePost(event.post as PostRecord)} variant="danger">
           Delete
         </Button>
@@ -3792,6 +5521,7 @@ function PlannerEventActions(props: {
 }
 
 function CalendarGrid(props: {
+  canManagePlanning: boolean;
   days: Date[];
   events: PlannerEvent[];
   monthKey: string;
@@ -3822,19 +5552,22 @@ function CalendarGrid(props: {
         const outside = key.slice(0, 7) !== props.monthKey;
         return (
           <div
-            aria-label={`Create planner row on ${key}`}
+            aria-label={props.canManagePlanning ? `Create post on ${key}` : `Posts on ${key}`}
             className={[
               outside ? "calendar-cell calendar-cell-muted" : "calendar-cell",
-              props.draggingEventId ? "calendar-cell-drop-target" : "",
+              props.canManagePlanning && props.draggingEventId ? "calendar-cell-drop-target" : "",
             ].filter(Boolean).join(" ")}
             key={key}
-            onClick={() => props.onCreatePost(key)}
+            onClick={props.canManagePlanning ? () => props.onCreatePost(key) : undefined}
             onDragOver={(event) => {
-              if (props.draggingEventId) {
+              if (props.canManagePlanning && props.draggingEventId) {
                 event.preventDefault();
               }
             }}
             onDrop={(event) => {
+              if (!props.canManagePlanning) {
+                return;
+              }
               event.preventDefault();
               const eventId = event.dataTransfer.getData("text/plain");
               const dragged = props.events.find((item) => item.id === eventId);
@@ -3843,13 +5576,13 @@ function CalendarGrid(props: {
               }
             }}
             onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
+              if (props.canManagePlanning && (event.key === "Enter" || event.key === " ")) {
                 event.preventDefault();
                 props.onCreatePost(key);
               }
             }}
-            role="button"
-            tabIndex={0}
+            role={props.canManagePlanning ? "button" : undefined}
+            tabIndex={props.canManagePlanning ? 0 : undefined}
           >
             <span className="calendar-date">{day.getDate()}</span>
             <div className="calendar-events">
@@ -3860,13 +5593,17 @@ function CalendarGrid(props: {
                     `calendar-event calendar-event-${event.tone}`,
                     props.draggingEventId === event.id ? "calendar-event-dragging" : "",
                   ].filter(Boolean).join(" ")}
-                  draggable
+                  draggable={props.canManagePlanning}
                   key={event.id}
                   onClick={(clickEvent) => {
                     clickEvent.stopPropagation();
                   }}
                   onDragEnd={props.onEventDragEnd}
                   onDragStart={(dragEvent) => {
+                    if (!props.canManagePlanning) {
+                      dragEvent.preventDefault();
+                      return;
+                    }
                     dragEvent.stopPropagation();
                     dragEvent.dataTransfer.effectAllowed = "move";
                     dragEvent.dataTransfer.setData("text/plain", event.id);
@@ -3994,18 +5731,18 @@ function ChartHoverOverlay(props: {
   );
 }
 
-function ChartMetaBar(props: { data: TimeSeriesPoint[] }) {
+function ChartMetaBar(props: { data: TimeSeriesPoint[]; totalValue?: number }) {
   const meta = seriesMeta(props.data);
   return (
     <div className="chart-meta-bar">
       <span>{compactDateRange(meta.start, meta.end)}</span>
-      <span>Total: {formatCompactNumber(meta.total)}</span>
+      <span>Total: {formatCompactNumber(props.totalValue ?? meta.total)}</span>
       <span>{meta.days} day{meta.days === 1 ? "" : "s"}</span>
     </div>
   );
 }
 
-function MetricLineChart(props: { data: TimeSeriesPoint[]; label: string; tone?: "neutral" | "good" | "warn" | "bad" | "info" }) {
+function MetricLineChart(props: { data: TimeSeriesPoint[]; label: string; tone?: "neutral" | "good" | "warn" | "bad" | "info"; totalValue?: number }) {
   const data = Array.isArray(props.data) ? props.data.filter((point) => Number.isFinite(point.value)) : [];
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   if (!data.length) {
@@ -4031,7 +5768,7 @@ function MetricLineChart(props: { data: TimeSeriesPoint[]; label: string; tone?:
 
   return (
     <div className="metric-svg-shell">
-      <ChartMetaBar data={data} />
+      <ChartMetaBar data={data} totalValue={props.totalValue} />
       <svg
         className="metric-svg-chart"
         onMouseLeave={() => setHoverIndex(null)}
@@ -4080,7 +5817,7 @@ function MetricLineChart(props: { data: TimeSeriesPoint[]; label: string; tone?:
   );
 }
 
-function MetricAreaChart(props: { data: TimeSeriesPoint[]; label: string; tone?: "neutral" | "good" | "warn" | "bad" | "info" }) {
+function MetricAreaChart(props: { data: TimeSeriesPoint[]; label: string; tone?: "neutral" | "good" | "warn" | "bad" | "info"; totalValue?: number }) {
   const data = Array.isArray(props.data) ? props.data.filter((point) => Number.isFinite(point.value)) : [];
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   if (!data.length) {
@@ -4103,7 +5840,7 @@ function MetricAreaChart(props: { data: TimeSeriesPoint[]; label: string; tone?:
 
   return (
     <div className="metric-svg-shell">
-      <ChartMetaBar data={data} />
+      <ChartMetaBar data={data} totalValue={props.totalValue} />
       <svg
         className="metric-svg-chart"
         onMouseLeave={() => setHoverIndex(null)}
@@ -4251,6 +5988,57 @@ function MetricTotalsTable(props: { items: ComparisonPoint[] }) {
   );
 }
 
+function InsightDiagnosticsTable(props: {
+  rows: Array<{ account: AnalyticsAccountRecord; insight: SocialInsightRecord }>;
+}) {
+  const rows = Array.isArray(props.rows) ? props.rows : [];
+  if (!rows.length) {
+    return <EmptyState description="No diagnostic rows are saved for this filter." title="No diagnostics" />;
+  }
+  return (
+    <ResponsiveTable
+      columns={[
+        {
+          key: "account",
+          label: "Account",
+          render: (row) => <strong>{row.account.account_name || row.account.page_name || "Instagram account"}</strong>,
+        },
+        {
+          key: "metric",
+          label: "Metric",
+          render: (row) => (
+            <span>
+              {formatMetricName(row.insight.metric_name)}
+              <small className="table-subtext">{diagnosticRawMetric(row.insight)}</small>
+            </span>
+          ),
+        },
+        {
+          key: "date",
+          label: "Last checked",
+          render: (row) => formatDateTime(row.insight.last_error_at || row.insight.refreshed_at),
+        },
+        {
+          key: "state",
+          label: "State",
+          render: (row) => (
+            <Badge tone={row.insight.error_message ? "bad" : "warn"}>
+              {row.insight.error_message ? "Error" : "Unavailable"}
+            </Badge>
+          ),
+        },
+        {
+          key: "message",
+          label: "Message",
+          render: (row) => diagnosticMessage(row.insight),
+        },
+      ]}
+      getKey={(row) => `${row.account.id}-${row.insight.id}`}
+      items={rows}
+    />
+  );
+}
+
 function InsightRowsTable(props: {
   rows: Array<{ account: AnalyticsAccountRecord; insight: SocialInsightRecord }>;
 }) {
@@ -4344,6 +6132,99 @@ function ActivityFeed(props: {
   );
 }
 
+function LinkedInManualModal(props: {
+  open: boolean;
+  post: PostRecord | null;
+  onClose: () => void;
+  onComplete: (post: PostRecord) => Promise<void>;
+}) {
+  const post = props.post;
+  const manual = post?.linkedin_manual;
+  const mediaItems = manual?.media_items || [];
+  const copy = post?.content || "";
+
+  return (
+    <Modal
+      className="linkedin-manual-modal"
+      description="Use this to manually complete LinkedIn while the rest of the post is handled by the scheduler."
+      footer={
+        <>
+          <Button onClick={props.onClose} variant="secondary">Close</Button>
+          <Button
+            disabled={!post}
+            onClick={() => {
+              if (post) {
+                void props.onComplete(post);
+              }
+            }}
+            variant="primary"
+          >
+            Mark LinkedIn posted
+          </Button>
+        </>
+      }
+      onClose={props.onClose}
+      open={props.open}
+      title="LinkedIn manual post"
+    >
+      {!post ? null : (
+        <div className="linkedin-manual-panel">
+          <div className="linkedin-manual-schedule-meta">
+            <div>
+              <p className="detail-label">Client</p>
+              <strong>{post.page_name || "Selected page"}</strong>
+            </div>
+            <div>
+              <p className="detail-label">LinkedIn page</p>
+              {manual?.page_url ? (
+                <a href={manual.page_url} rel="noreferrer" target="_blank">{manual.page_url}</a>
+              ) : (
+                <span className="muted">No LinkedIn page URL saved.</span>
+              )}
+            </div>
+          </div>
+
+          <div className="linkedin-manual-copy">
+            <div className="inline-actions">
+              <strong>Post copy</strong>
+              <Button
+                onClick={() => {
+                  void navigator.clipboard?.writeText(copy);
+                }}
+                variant="ghost"
+              >
+                Copy text
+              </Button>
+            </div>
+            <pre>{copy || "No post copy saved."}</pre>
+          </div>
+
+          <div className="linkedin-manual-assets">
+            {mediaItems.length ? mediaItems.map((item) => {
+              const src = normalizeMediaSrc(item.url);
+              return (
+                <article className="linkedin-manual-asset" key={item.path}>
+                  {item.is_video ? (
+                    <video className="linkedin-manual-preview" controls src={src} />
+                  ) : (
+                    <img alt={item.name} className="linkedin-manual-preview" src={src} />
+                  )}
+                  <div className="linkedin-manual-asset-meta">
+                    <p className="linkedin-manual-name">{item.name}</p>
+                    <a href={src} rel="noreferrer" target="_blank">Open media</a>
+                  </div>
+                </article>
+              );
+            }) : (
+              <div className="linkedin-manual-empty">No media attached.</div>
+            )}
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function CreatePageModal(props: {
   open: boolean;
   onClose: () => void;
@@ -4394,67 +6275,450 @@ function CreatePlannerRowModal(props: {
   defaultMonth: string;
   designerOptions: string[];
   onClose: () => void;
-  onSubmit: (payload: Record<string, unknown>) => Promise<void>;
+  onSubmit: (payload: Record<string, unknown>, mediaFiles: File[]) => Promise<void>;
 }) {
+  const [dateValue, setDateValue] = useState(props.defaultDate);
+  const [timeValue, setTimeValue] = useState("");
+  const [jobNr, setJobNr] = useState("");
+  const [title, setTitle] = useState("");
+  const [format, setFormat] = useState("");
+  const [link, setLink] = useState("");
+  const [designer, setDesigner] = useState("");
+  const [copy, setCopy] = useState("");
+  const [mediaItems, setMediaItems] = useState<ComposerMediaItem[]>([]);
+  const [mediaBusy, setMediaBusy] = useState(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
+  const [cropTargetId, setCropTargetId] = useState<string | null>(null);
+  const [cropConfig, setCropConfig] = useState<CropConfig>({
+    targetRatio: 1,
+    offsetX: 50,
+    offsetY: 50,
+    zoom: 1,
+  });
+  const [cropApplying, setCropApplying] = useState(false);
+  const mediaItemsRef = useRef(mediaItems);
+  const cropTarget = mediaItems.find((item) => item.id === cropTargetId) || null;
+  const blockingCropCount = mediaItems.filter((item) => item.cropNeeded).length;
+  const pendingMediaCount = mediaItems.filter((item) => item.processing).length;
+  const selectedPreviewItem = cropTarget || mediaItems[0] || null;
+
+  useEffect(() => {
+    mediaItemsRef.current = mediaItems;
+  }, [mediaItems]);
+
+  useEffect(() => {
+    if (!props.open) {
+      return;
+    }
+    setDateValue(props.defaultDate);
+    setTimeValue("");
+    setJobNr("");
+    setTitle("");
+    setFormat("");
+    setLink("");
+    setDesigner("");
+    setCopy("");
+    setComposerError(null);
+    setCropTargetId(null);
+    setCropApplying(false);
+    setMediaItems((current) => {
+      current.forEach((item) => {
+        if (item.previewUrl) {
+          URL.revokeObjectURL(item.previewUrl);
+        }
+      });
+      return [];
+    });
+  }, [props.open, props.defaultDate]);
+
+  useEffect(() => () => {
+    mediaItemsRef.current.forEach((item) => {
+      if (item.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+    });
+  }, []);
+
+  async function addMediaFiles(files: File[]): Promise<void> {
+    if (!files.length) {
+      return;
+    }
+    setMediaBusy(true);
+    setComposerError(null);
+    try {
+      for (const file of files) {
+        const id = `${file.name}-${file.lastModified}-${crypto.randomUUID()}`;
+        setMediaItems((current) => [
+          ...current,
+          {
+            id,
+            file,
+            previewUrl: null,
+            kind: file.type.startsWith("image/") ? "image" : "video",
+            width: null,
+            height: null,
+            ratio: null,
+            cropNeeded: false,
+            processing: true,
+            error: null,
+          },
+        ]);
+        try {
+          const prepared = await prepareComposerMediaItem(file, id);
+          setMediaItems((current) => current.map((item) => (item.id === id ? prepared : item)));
+        } catch (error) {
+          setMediaItems((current) =>
+            current.map((item) =>
+              item.id === id
+                ? {
+                    ...item,
+                    processing: false,
+                    error: error instanceof Error ? error.message : "Could not inspect this media file.",
+                  }
+                : item,
+            ),
+          );
+        }
+      }
+    } finally {
+      setMediaBusy(false);
+    }
+  }
+
+  function moveMedia(index: number, delta: -1 | 1): void {
+    setMediaItems((current) => {
+      const next = [...current];
+      const target = index + delta;
+      if (target < 0 || target >= next.length) {
+        return current;
+      }
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+
+  function removeMedia(id: string): void {
+    setMediaItems((current) => {
+      const removed = current.find((item) => item.id === id);
+      if (removed?.previewUrl) {
+        URL.revokeObjectURL(removed.previewUrl);
+      }
+      if (cropTargetId === id) {
+        setCropTargetId(null);
+      }
+      return current.filter((item) => item.id !== id);
+    });
+  }
+
   return (
     <Modal
-      description={props.page ? `Add a calendar row for ${props.page.name}.` : "Select a page first."}
+      className="post-composer-modal"
       footer={
         <>
           <Button onClick={props.onClose} variant="secondary">Cancel</Button>
-          <Button disabled={!props.page} form="create-row-form" type="submit" variant="primary">Save row</Button>
+          <Button
+            disabled={!props.page || mediaBusy || cropApplying || pendingMediaCount > 0 || blockingCropCount > 0}
+            form="create-row-form"
+            type="submit"
+            variant="primary"
+          >
+            Save draft
+          </Button>
         </>
       }
       onClose={props.onClose}
       open={props.open}
-      title="New planner row"
+      title="Create post"
     >
       <form
-        className="form-grid"
+        className="post-composer"
         id="create-row-form"
         onSubmit={(event) => {
           event.preventDefault();
-          const formData = new FormData(event.currentTarget);
+          if (pendingMediaCount > 0 || mediaBusy) {
+            setComposerError("Wait for media previews to finish processing before saving.");
+            return;
+          }
+          if (blockingCropCount > 0) {
+            setComposerError("Crop the images marked Crop image before saving this draft.");
+            return;
+          }
+          setComposerError(null);
           void props.onSubmit({
-            planning_month: String(formData.get("date_value") || props.defaultDate).slice(0, 7) || props.defaultMonth,
-            date_value: String(formData.get("date_value") || props.defaultDate),
-            time_value: String(formData.get("time_value") || ""),
-            theme: String(formData.get("theme") || ""),
-            post_copy: String(formData.get("post_copy") || ""),
-            format: String(formData.get("format") || ""),
-            designer: String(formData.get("designer") || ""),
-            job_color: String(formData.get("job_color") || "#D9D9D9"),
-          });
+            planning_month: dateValue.slice(0, 7) || props.defaultMonth,
+            date_value: dateValue,
+            time_value: timeValue,
+            job_nr: jobNr,
+            theme: title,
+            post_copy: copy,
+            link,
+            format,
+            final_creative: "",
+            designer,
+          }, mediaItems.map((item) => item.file));
         }}
       >
-        <Field label="Date">
-          <input defaultValue={props.defaultDate} name="date_value" type="date" />
-        </Field>
-        <Field label="Time">
-          <input name="time_value" type="time" />
-        </Field>
-        <Field label="Theme">
-          <input name="theme" required />
-        </Field>
-        <Field label="Format">
-          <input name="format" placeholder="Carousel, image, video" />
-        </Field>
-        <Field label="Designer">
-          <select name="designer">
-            <option value="">Unassigned</option>
-            {props.designerOptions.map((designer) => (
-              <option key={designer} value={designer}>{designer}</option>
+        <section className="post-composer-preview" aria-label="Post preview">
+          {cropTarget ? (
+            <CropDashboard
+              applying={cropApplying}
+              config={cropConfig}
+              item={cropTarget}
+              onApply={async () => {
+                setCropApplying(true);
+                setComposerError(null);
+                try {
+                  const cropped = await cropComposerMediaItem(cropTarget, cropConfig);
+                  setMediaItems((current) =>
+                    current.map((item) => (item.id === cropTarget.id ? cropped : item)),
+                  );
+                  setCropTargetId(null);
+                } catch (error) {
+                  setComposerError(error instanceof Error ? error.message : "Could not crop this image.");
+                } finally {
+                  setCropApplying(false);
+                }
+              }}
+              onClose={() => setCropTargetId(null)}
+              onConfigChange={setCropConfig}
+            />
+          ) : (
+            <div className="composer-phone">
+              <div className="composer-preview-header">
+                <MediaThumb alt={props.page?.name || "Page"} src={pageImageUrl(props.page)} />
+                <div>
+                  <strong>{props.page?.name || "Select a page"}</strong>
+                  <span>{dateValue || "Draft"} {timeValue ? `at ${timeValue}` : ""}</span>
+                </div>
+              </div>
+              <div className="composer-media-stage">
+                {selectedPreviewItem?.processing ? (
+                  <div className="composer-media-empty">Preparing preview</div>
+                ) : selectedPreviewItem?.previewUrl ? (
+                  selectedPreviewItem.kind === "video" ? (
+                    <video controls src={selectedPreviewItem.previewUrl} />
+                  ) : (
+                    <img alt={selectedPreviewItem.file.name} src={selectedPreviewItem.previewUrl} />
+                  )
+                ) : (
+                  <div className="composer-media-empty">Media preview</div>
+                )}
+              </div>
+              <div className="composer-preview-copy">
+                <strong>{title || "Untitled post"}</strong>
+                <p>{copy || "Post copy will appear here as you type."}</p>
+                {link ? <a href={link} rel="noreferrer" target="_blank">{link}</a> : null}
+              </div>
+              <div className="chip-row">
+                {props.page?.social_accounts.filter((account) => account.is_active).map((account) => (
+                  <span className="chip" key={account.id}>{account.platform}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="post-composer-fields" aria-label="Post details">
+          {composerError ? <div className="composer-notice composer-notice-bad">{composerError}</div> : null}
+          {blockingCropCount ? (
+            <div className="composer-notice composer-notice-warn">
+              {blockingCropCount} image{blockingCropCount === 1 ? "" : "s"} need cropping for Instagram feed ratio.
+            </div>
+          ) : null}
+          <div className="form-grid">
+            <Field label="Date">
+              <input onChange={(event) => setDateValue(event.target.value)} type="date" value={dateValue} />
+            </Field>
+            <Field label="Time">
+              <input onChange={(event) => setTimeValue(event.target.value)} type="time" value={timeValue} />
+            </Field>
+            <Field label="Job Nr">
+              <input onChange={(event) => setJobNr(event.target.value)} placeholder="Optional" value={jobNr} />
+            </Field>
+            <Field label="Post title">
+              <input onChange={(event) => setTitle(event.target.value)} required value={title} />
+            </Field>
+            <Field label="Format">
+              <input onChange={(event) => setFormat(event.target.value)} placeholder="Carousel, image, video" value={format} />
+            </Field>
+            <Field label="Link">
+              <input onChange={(event) => setLink(event.target.value)} placeholder="Optional URL" value={link} />
+            </Field>
+            <Field label="Designer">
+              <select onChange={(event) => setDesigner(event.target.value)} value={designer}>
+                <option value="">Unassigned</option>
+                {props.designerOptions.map((designer) => (
+                  <option key={designer} value={designer}>{designer}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
+          <Field label="Post copy">
+            <textarea onChange={(event) => setCopy(event.target.value)} rows={7} value={copy} />
+          </Field>
+
+          <Field label="Images or video">
+            <input
+              accept="image/*,video/*"
+              multiple
+              onChange={(event) => {
+                const files = Array.from(event.target.files || []);
+                void addMediaFiles(files);
+                event.currentTarget.value = "";
+              }}
+              type="file"
+            />
+            <span className="field-hint">
+              Images are inspected before saving. Oversized files use lightweight previews in the composer.
+            </span>
+          </Field>
+
+          <div className="composer-media-list">
+            {mediaItems.map((item, index) => (
+              <article className="composer-media-item" key={item.id}>
+                {item.processing ? (
+                  <div className="composer-media-pending">...</div>
+                ) : item.previewUrl && item.kind === "video" ? (
+                  <video src={item.previewUrl} />
+                ) : item.previewUrl ? (
+                  <img alt={item.file.name} src={item.previewUrl} />
+                ) : (
+                  <span className="post-thumb-placeholder" />
+                )}
+                <div>
+                  <strong>{item.file.name}</strong>
+                  <span>
+                    {index + 1} of {mediaItems.length} · {formatFileSize(item.file.size)}
+                    {item.width && item.height ? ` · ${item.width}x${item.height}` : ""}
+                  </span>
+                  {item.error ? <span className="composer-media-error">{item.error}</span> : null}
+                  {item.cropNeeded ? (
+                    <span className="composer-media-status">Crop required: Instagram accepts 4:5 to 1.91:1.</span>
+                  ) : null}
+                </div>
+                <div className="inline-actions">
+                  {item.kind === "image" && !item.processing ? (
+                    <Button
+                      onClick={() => {
+                        setCropTargetId(item.id);
+                        setCropConfig({
+                          targetRatio: recommendedCropRatio(item.width, item.height),
+                          offsetX: 50,
+                          offsetY: 50,
+                          zoom: 1,
+                        });
+                      }}
+                      type="button"
+                      variant={item.cropNeeded ? "primary" : "ghost"}
+                    >
+                      {item.cropNeeded ? "Crop image" : "Crop"}
+                    </Button>
+                  ) : null}
+                  <Button disabled={index === 0} onClick={() => moveMedia(index, -1)} type="button" variant="ghost">Up</Button>
+                  <Button disabled={index === mediaItems.length - 1} onClick={() => moveMedia(index, 1)} type="button" variant="ghost">Down</Button>
+                  <Button onClick={() => removeMedia(item.id)} type="button" variant="danger">Remove</Button>
+                </div>
+              </article>
             ))}
-          </select>
-        </Field>
-        <Field label="Readiness color">
-          <input defaultValue="#D9D9D9" name="job_color" type="color" />
-        </Field>
-        <Field label="Post copy">
-          <textarea name="post_copy" rows={5} />
-        </Field>
+          </div>
+        </section>
       </form>
     </Modal>
+  );
+}
+
+function CropDashboard(props: {
+  item: ComposerMediaItem;
+  config: CropConfig;
+  applying: boolean;
+  onConfigChange: (config: CropConfig) => void;
+  onApply: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const ratioLabel = `${props.config.targetRatio.toFixed(2)}:1`;
+  return (
+    <div className="crop-dashboard">
+      <div className="crop-dashboard-header">
+        <div>
+          <strong>Crop image</strong>
+          <span>{props.item.file.name}</span>
+        </div>
+        <Button onClick={props.onClose} type="button" variant="ghost">Back to preview</Button>
+      </div>
+      <div className="crop-stage-shell">
+        <div className="crop-stage" style={{ aspectRatio: String(props.config.targetRatio) }}>
+          {props.item.previewUrl ? (
+            <img
+              alt={props.item.file.name}
+              src={props.item.previewUrl}
+              style={{
+                objectPosition: `${props.config.offsetX}% ${props.config.offsetY}%`,
+                transform: `scale(${props.config.zoom})`,
+              }}
+            />
+          ) : (
+            <div className="composer-media-empty">Preparing crop preview</div>
+          )}
+        </div>
+      </div>
+      <div className="crop-control-grid">
+        <Field label="Crop ratio">
+          <select
+            onChange={(event) =>
+              props.onConfigChange({ ...props.config, targetRatio: Number(event.target.value) })
+            }
+            value={String(props.config.targetRatio)}
+          >
+            <option value={String(recommendedCropRatio(props.item.width, props.item.height))}>Recommended {ratioLabel}</option>
+            <option value={String(INSTAGRAM_FEED_RATIO_MIN)}>Portrait 4:5</option>
+            <option value="1">Square 1:1</option>
+            <option value="1.3333333333333333">Landscape 4:3</option>
+            <option value={String(INSTAGRAM_FEED_RATIO_MAX)}>Wide 1.91:1</option>
+          </select>
+        </Field>
+        <Field label="Zoom">
+          <input
+            max="3"
+            min="1"
+            onChange={(event) =>
+              props.onConfigChange({ ...props.config, zoom: Number(event.target.value) })
+            }
+            step="0.05"
+            type="range"
+            value={props.config.zoom}
+          />
+        </Field>
+        <Field label="Horizontal">
+          <input
+            max="100"
+            min="0"
+            onChange={(event) =>
+              props.onConfigChange({ ...props.config, offsetX: Number(event.target.value) })
+            }
+            type="range"
+            value={props.config.offsetX}
+          />
+        </Field>
+        <Field label="Vertical">
+          <input
+            max="100"
+            min="0"
+            onChange={(event) =>
+              props.onConfigChange({ ...props.config, offsetY: Number(event.target.value) })
+            }
+            type="range"
+            value={props.config.offsetY}
+          />
+        </Field>
+      </div>
+      <div className="crop-dashboard-footer">
+        <span>Accepted feed range: 4:5 to 1.91:1</span>
+        <Button disabled={props.applying} onClick={() => void props.onApply()} type="button" variant="primary">
+          {props.applying ? "Applying crop" : "Apply crop"}
+        </Button>
+      </div>
+    </div>
   );
 }
 

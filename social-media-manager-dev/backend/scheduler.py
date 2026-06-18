@@ -16,7 +16,6 @@ logger = core.logger
 scheduler = core.scheduler
 timedelta = core.timedelta
 utcnow = core.utcnow
-_startup_insights_refresh_done = False
 
 def auto_schedule_due_planning_rows(now: datetime) -> None:
     window_end = now + timedelta(minutes=PLANNING_AUTO_SCHEDULE_LEAD_MINUTES)
@@ -122,14 +121,11 @@ def prune_storage_job() -> None:
         prune_orphaned_upload_files()
 
 def refresh_social_insights_job() -> None:
-    global _startup_insights_refresh_done
     with app.app_context():
         from .services.analytics import refresh_all_social_insights
 
         try:
-            force_startup_refresh = not _startup_insights_refresh_done
-            result = refresh_all_social_insights(force=force_startup_refresh, paced=True)
-            _startup_insights_refresh_done = True
+            result = refresh_all_social_insights(force=False, paced=True)
             logger.info("Social insights refresh finished: %s", result)
         except Exception as error:
             logger.exception("Social insights refresh failed unexpectedly: %s", error)
@@ -168,7 +164,7 @@ def start_scheduler() -> None:
         id="refresh_social_insights",
         replace_existing=True,
         max_instances=1,
-        next_run_time=utcnow(),
+        next_run_time=utcnow() + timedelta(seconds=core.SOCIAL_INSIGHTS_REFRESH_INTERVAL_SECONDS),
     )
     scheduler.start()
     logger.info("Scheduler started. Timezone=%s", APP_TIMEZONE_NAME)

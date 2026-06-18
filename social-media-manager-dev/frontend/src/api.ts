@@ -2,6 +2,7 @@ import type {
   AccountOperationResponse,
   AnalyticsAccountRecord,
   AnalyticsPostInsightRecord,
+  AnalyticsRefreshStatus,
   GlobalSettingsPayload,
   IntegrationAccount,
   LoginResponse,
@@ -36,6 +37,14 @@ export class ApiError extends Error {
 }
 
 type SessionUpdater = (nextSession: SessionPayload | null) => void;
+
+type AnalyticsRefreshOptions = {
+  range?: string;
+  customStart?: string;
+  customEnd?: string;
+};
+
+let refreshInFlight: Promise<SessionPayload | null> | null = null;
 
 function readResponseMessage(payload: unknown, fallback: string): string {
   if (payload && typeof payload === "object") {
@@ -87,6 +96,15 @@ async function refreshAccessToken(session: SessionPayload): Promise<SessionPaylo
   };
 }
 
+async function refreshAccessTokenOnce(session: SessionPayload): Promise<SessionPayload | null> {
+  if (!refreshInFlight) {
+    refreshInFlight = refreshAccessToken(session).finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
 async function authorizedJson<T>(
   path: string,
   session: SessionPayload,
@@ -107,7 +125,7 @@ async function authorizedJson<T>(
   });
 
   if (response.status === 401 && allowRetry) {
-    const refreshedSession = await refreshAccessToken(session);
+    const refreshedSession = await refreshAccessTokenOnce(session);
     if (!refreshedSession) {
       onSessionUpdate(null);
       throw new ApiError("Your session has expired. Please sign in again.", 401);
@@ -117,6 +135,54 @@ async function authorizedJson<T>(
   }
 
   return parseJsonResponse<T>(response, "The request failed.");
+}
+
+async function parseBlobResponse(response: Response, fallbackMessage: string): Promise<Blob> {
+  if (response.ok) {
+    return response.blob();
+  }
+
+  const text = await response.text();
+  let payload: unknown = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text) as unknown;
+    } catch {
+      payload = null;
+    }
+  }
+  const message = payload
+    ? readResponseMessage(payload, fallbackMessage)
+    : text.trim() || fallbackMessage;
+  throw new ApiError(message, response.status);
+}
+
+async function authorizedBlob(
+  path: string,
+  session: SessionPayload,
+  onSessionUpdate: SessionUpdater,
+  init: RequestInit = {},
+  allowRetry = true,
+): Promise<Blob> {
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${session.accessToken}`);
+
+  const response = await fetch(path, {
+    ...init,
+    headers,
+  });
+
+  if (response.status === 401 && allowRetry) {
+    const refreshedSession = await refreshAccessTokenOnce(session);
+    if (!refreshedSession) {
+      onSessionUpdate(null);
+      throw new ApiError("Your session has expired. Please sign in again.", 401);
+    }
+    onSessionUpdate(refreshedSession);
+    return authorizedBlob(path, refreshedSession, onSessionUpdate, init, false);
+  }
+
+  return parseBlobResponse(response, "The download failed.");
 }
 
 export function readStoredSession(): SessionPayload | null {
@@ -279,6 +345,11 @@ function normalizeAnalyticsAccounts(payload: unknown): AnalyticsAccountRecord[] 
     ...account,
     last_refresh_run_id: account.last_refresh_run_id ?? null,
     last_refresh_run_started_at: account.last_refresh_run_started_at ?? null,
+    diagnostics: normalizeArray<SocialInsightRecord>(account.diagnostics).map((insight) => ({
+      ...insight,
+      refresh_run_id: insight.refresh_run_id ?? null,
+      refresh_run_started_at: insight.refresh_run_started_at ?? null,
+    })),
     insights: normalizeArray<SocialInsightRecord>(account.insights).map((insight) => ({
       ...insight,
       refresh_run_id: insight.refresh_run_id ?? null,
@@ -290,6 +361,8 @@ function normalizeAnalyticsAccounts(payload: unknown): AnalyticsAccountRecord[] 
 function normalizeAnalyticsPosts(payload: unknown): AnalyticsPostInsightRecord[] {
   return normalizeArray<AnalyticsPostInsightRecord>(payload, "items").map((post) => ({
     ...post,
+    internal_post_id: typeof post.internal_post_id === "number" ? post.internal_post_id : null,
+    page_id: typeof post.page_id === "number" ? post.page_id : null,
     page_name: post.page_name ?? null,
     account_name: post.account_name ?? null,
     thumbnail: post.thumbnail ?? null,
@@ -305,6 +378,30 @@ function normalizeAnalyticsPosts(payload: unknown): AnalyticsPostInsightRecord[]
     state: post.state || "No post insights yet",
     metrics: post.metrics && typeof post.metrics === "object" ? post.metrics : {},
   }));
+}
+
+function normalizeAnalyticsRefreshStatus(payload: unknown): AnalyticsRefreshStatus {
+  const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  const result = record.result && typeof record.result === "object"
+    ? record.result as Record<string, unknown>
+    : null;
+  return {
+    id: typeof record.id === "string" ? record.id : null,
+    status: typeof record.status === "string" ? record.status : "idle",
+    message: typeof record.message === "string" ? record.message : null,
+    account_id: typeof record.account_id === "number" ? record.account_id : null,
+    started_at: typeof record.started_at === "string" ? record.started_at : null,
+    finished_at: typeof record.finished_at === "string" ? record.finished_at : null,
+    progress_current: Number(record.progress_current || 0),
+    progress_total: Number(record.progress_total || 0),
+    result,
+    error: typeof record.error === "string" ? record.error : null,
+    accepted: typeof record.accepted === "boolean" ? record.accepted : undefined,
+  };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function normalizeScheduler(payload: unknown): SchedulerStatus {
@@ -631,9 +728,32 @@ export async function schedulePlanningRow(
   session: SessionPayload,
   onSessionUpdate: SessionUpdater,
   rowId: number,
-): Promise<{ message: string; row: PlanningRowRecord }> {
-  return apiJson<{ message: string; row: PlanningRowRecord }>(
+): Promise<{ message: string; row: PlanningRowRecord; post?: PostRecord }> {
+  return apiJson<{ message: string; row: PlanningRowRecord; post?: PostRecord }>(
     `/api/planning/rows/${rowId}/schedule`,
+    session,
+    onSessionUpdate,
+    { method: "POST" },
+  );
+}
+
+export async function publishPlanningRow(
+  session: SessionPayload,
+  onSessionUpdate: SessionUpdater,
+  rowId: number,
+): Promise<{
+  message: string;
+  row: PlanningRowRecord;
+  post: PostRecord;
+  results: Array<Record<string, unknown>>;
+}> {
+  return apiJson<{
+    message: string;
+    row: PlanningRowRecord;
+    post: PostRecord;
+    results: Array<Record<string, unknown>>;
+  }>(
+    `/api/planning/rows/${rowId}/publish`,
     session,
     onSessionUpdate,
     { method: "POST" },
@@ -827,26 +947,115 @@ export async function loadAnalyticsAccounts(
 export async function loadAnalyticsPosts(
   session: SessionPayload,
   onSessionUpdate: SessionUpdater,
-  limit = 50,
+  limit = 500,
+  days = 3650,
 ): Promise<AnalyticsPostInsightRecord[]> {
   const payload = await apiJson<unknown>(
-    `/api/analytics/posts?limit=${encodeURIComponent(String(limit))}`,
+    `/api/analytics/posts?limit=${encodeURIComponent(String(limit))}&days=${encodeURIComponent(String(days))}`,
     session,
     onSessionUpdate,
   );
   return normalizeAnalyticsPosts(payload);
 }
 
-export async function refreshAnalytics(
+export async function loadAnalyticsRefreshStatus(
   session: SessionPayload,
   onSessionUpdate: SessionUpdater,
-): Promise<Record<string, unknown>> {
-  return apiJson<Record<string, unknown>>(
-    "/api/analytics/refresh?force=true",
+): Promise<AnalyticsRefreshStatus> {
+  const payload = await apiJson<unknown>(
+    "/api/analytics/refresh/status",
+    session,
+    onSessionUpdate,
+  );
+  return normalizeAnalyticsRefreshStatus(payload);
+}
+
+export async function downloadAnalyticsReportWorkbook(
+  session: SessionPayload,
+  onSessionUpdate: SessionUpdater,
+): Promise<Blob> {
+  return authorizedBlob(
+    "/api/analytics/export-report.xlsx",
+    session,
+    onSessionUpdate,
+  );
+}
+
+export type AnalyticsReportSyncResult = {
+  message?: string;
+  spreadsheet_id?: string;
+  spreadsheet_title?: string;
+  target_year?: number;
+  target_month?: number;
+  prepared_cells?: number;
+  updated_cells?: number;
+  dry_run?: boolean;
+  skipped_sheets?: string[];
+};
+
+export async function syncAnalyticsReportSheet(
+  session: SessionPayload,
+  onSessionUpdate: SessionUpdater,
+): Promise<AnalyticsReportSyncResult> {
+  const payload = await apiJson<AnalyticsReportSyncResult>(
+    "/api/analytics/export-report",
     session,
     onSessionUpdate,
     { method: "POST" },
   );
+  return payload;
+}
+
+export async function refreshAnalytics(
+  session: SessionPayload,
+  onSessionUpdate: SessionUpdater,
+  accountId?: number,
+  onProgress?: (status: AnalyticsRefreshStatus) => void,
+  options?: AnalyticsRefreshOptions,
+): Promise<Record<string, unknown>> {
+  let activeSession = session;
+  const trackSessionUpdate: SessionUpdater = (nextSession) => {
+    if (nextSession) {
+      activeSession = nextSession;
+    }
+    onSessionUpdate(nextSession);
+  };
+  const query = new URLSearchParams({ force: "true" });
+  if (typeof accountId === "number") {
+    query.set("account_id", String(accountId));
+  }
+  if (options?.range) {
+    query.set("range", options.range);
+  }
+  if (options?.customStart) {
+    query.set("start", options.customStart);
+  }
+  if (options?.customEnd) {
+    query.set("end", options.customEnd);
+  }
+  let status = normalizeAnalyticsRefreshStatus(await apiJson<unknown>(
+    `/api/analytics/refresh?${query.toString()}`,
+    activeSession,
+    trackSessionUpdate,
+    { method: "POST" },
+  ));
+  onProgress?.(status);
+
+  const timeoutAt = Date.now() + 90 * 60 * 1000;
+  while (["queued", "running"].includes(status.status) && Date.now() < timeoutAt) {
+    await delay(2000);
+    status = await loadAnalyticsRefreshStatus(activeSession, trackSessionUpdate);
+    onProgress?.(status);
+  }
+
+  if (["queued", "running"].includes(status.status)) {
+    throw new ApiError("Analytics refresh is still running. Check refresh status again shortly.", 408);
+  }
+  if (status.status === "failed") {
+    throw new ApiError(status.error || status.message || "Analytics refresh failed.", 500);
+  }
+
+  return status.result || (status as unknown as Record<string, unknown>);
 }
 
 export async function createUserRecord(

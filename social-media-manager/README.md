@@ -1,6 +1,6 @@
-﻿# Sample SoMe-Auto
+# MSS SoME-Auto
 
-`Sample SoMe-Auto` is a local web application for social media scheduling and publishing.
+`MSS SoME-Auto` is a local web application for social media scheduling and publishing.
 
 ## Current architecture
 
@@ -36,8 +36,8 @@ The app bootstraps one protected developer account from `instance/users.json`.
 
 If the file does not exist yet, the bootstrap account defaults to:
 
-- Username: `Example User`
-- Password: `change-me-example-password`
+- Username: `marcel`
+- Password: `admin123`
 
 You can override the bootstrap owner with:
 
@@ -126,7 +126,7 @@ Live posting is controlled by app setting `live_posting_enabled`:
 
 Platform behavior:
 
-- Facebook: posts are handed off to Meta's native scheduler at least 25 minutes before go-live; direct Facebook publishing is disabled in live mode
+- Facebook: direct live publishing through the Graph API feed path is supported
 - Twitter/X: text + image/video upload supported
 - LinkedIn: text and uploaded image/video post supported
 - Instagram Graph API: single media post via temporary signed URL supported
@@ -169,7 +169,7 @@ Use the **Integrations** tab in the web app to verify:
 - Tokens and integration readiness can be filtered by page.
 - Page listing API supports search and pagination for large installations.
 - Planning sheets are automatically created for each page.
-- Planning rows can upload creative media and schedule posts directly from row data.
+- Planning rows can upload creative media, schedule posts, and publish active approved rows immediately from row data.
 
 ## Important API endpoints
 
@@ -182,8 +182,9 @@ Use the **Integrations** tab in the web app to verify:
 - `POST /api/accounts/:id/test`
 - `POST /api/accounts/:id/refresh`
 - `GET /api/posts`
-- Planner-driven scheduling only:
+- Planner-driven scheduling and immediate publishing:
 - `POST /api/planning/rows/:id/schedule`
+- `POST /api/planning/rows/:id/publish`
 - `POST /api/planning/rows/:id/creative`
 - `GET /api/settings`
 - `PUT /api/settings`
@@ -200,4 +201,4 @@ Use the **Integrations** tab in the web app to verify:
 - `DELETE /api/planning/rows/:id`
 - `POST /api/planning/rows/:id/creative`
 - `POST /api/planning/rows/:id/schedule`
-
+- `POST /api/planning/rows/:id/publish`

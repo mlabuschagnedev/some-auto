@@ -27,6 +27,9 @@ secure_filename = core.secure_filename
 time = core.time
 uuid = core.uuid
 
+PUBLISH_IMAGE_MAX_WIDTH = int(os.environ.get("PUBLISH_IMAGE_MAX_WIDTH", "1440"))
+PUBLISH_IMAGE_JPEG_QUALITY = int(os.environ.get("PUBLISH_IMAGE_JPEG_QUALITY", "92"))
+
 def detect_media_type(paths: list[str]) -> str | None:
     if not paths:
         return None
@@ -95,6 +98,57 @@ def instagram_ratio_details_for_path(media_path: str) -> dict[str, Any] | None:
     }
 
 
+def normalize_image_for_publishing(media_path: str) -> bool:
+    resolved = Path(media_path)
+    if not resolved.exists() or is_video_path(str(resolved)):
+        return False
+
+    with Image.open(resolved) as image:
+        width, height = image.size
+        image_format = (image.format or resolved.suffix.lstrip(".") or "JPEG").upper()
+        if image_format == "JPG":
+            image_format = "JPEG"
+
+        if width <= 0 or height <= 0:
+            raise RuntimeError(f"Image has invalid dimensions: {resolved.name}")
+        if width <= PUBLISH_IMAGE_MAX_WIDTH:
+            return False
+
+        target_height = max(1, round(height * (PUBLISH_IMAGE_MAX_WIDTH / width)))
+        resized = image.resize((PUBLISH_IMAGE_MAX_WIDTH, target_height), Image.Resampling.LANCZOS)
+
+        save_kwargs: dict[str, Any] = {}
+        if image_format in {"JPEG", "WEBP"}:
+            if resized.mode not in {"RGB", "L"}:
+                resized = resized.convert("RGB")
+            save_kwargs["quality"] = max(1, min(PUBLISH_IMAGE_JPEG_QUALITY, 95))
+            save_kwargs["optimize"] = True
+            if image_format == "JPEG":
+                save_kwargs["progressive"] = True
+        elif image_format == "PNG":
+            save_kwargs["optimize"] = True
+
+        resized.save(resolved, image_format, **save_kwargs)
+
+    logger.info(
+        "Resized publishing image %s from %sx%s to %sx%s.",
+        resolved,
+        width,
+        height,
+        PUBLISH_IMAGE_MAX_WIDTH,
+        target_height,
+    )
+    return True
+
+
+def normalize_media_for_publishing(media_paths: list[str]) -> list[str]:
+    for media_path in media_paths:
+        if str(media_path).startswith(("http://", "https://")):
+            continue
+        normalize_image_for_publishing(media_path)
+    return media_paths
+
+
 def validate_page_creative_media(page: Page, media_refs: list[str]) -> None:
     if not media_refs:
         return
@@ -121,6 +175,7 @@ def validate_page_creative_media(page: Page, media_refs: list[str]) -> None:
 
     invalid_images: list[str] = []
     for item in resolved_media:
+        normalize_image_for_publishing(item)
         details = instagram_ratio_details_for_path(item)
         if not details or details["accepted"]:
             continue
@@ -147,7 +202,10 @@ def store_upload(file_storage) -> str:
         target_dir = IMAGE_DIR
         relative = f"images/{unique_name}"
 
-    file_storage.save(target_dir / unique_name)
+    target_path = target_dir / unique_name
+    file_storage.save(target_path)
+    if ext not in VIDEO_EXTENSIONS:
+        normalize_image_for_publishing(str(target_path))
     return relative
 
 
@@ -335,7 +393,10 @@ def make_public_media_url(media_path: str, ttl_seconds: int = 3600) -> str | Non
     relative = resolve_upload_relative_path(media_path)
     if not relative:
         return None
-    return build_signed_media_url(relative, ttl_seconds=ttl_seconds)
+    public_base = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if not public_base:
+        return None
+    return f"{public_base}/uploads/{quote(relative, safe='/')}"
 
 
 def validate_remote_media_url(media_url: str, *, expect_video: bool) -> None:

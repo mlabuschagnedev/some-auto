@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from . import app as core
 from .models import AppSetting, Page, SocialAccount, db
@@ -308,7 +308,7 @@ def missing_credential_fields(account: SocialAccount) -> list[str]:
 def test_facebook_live(account: SocialAccount) -> str:
     target_id = account.page_id_external or "me"
     response = requests.get(
-        f"https://graph.facebook.com/v19.0/{target_id}",
+        f"https://graph.facebook.com/v25.0/{target_id}",
         params={"fields": "id,name", "access_token": account.access_token},
         timeout=API_TIMEOUT_SECONDS,
     )
@@ -337,7 +337,7 @@ def validate_linkedin_account_binding(account: SocialAccount) -> None:
 
 def fetch_instagram_business_account(access_token: str, ig_user_id: str) -> dict[str, Any]:
     response = requests.get(
-        f"https://graph.facebook.com/v19.0/{ig_user_id}",
+        f"https://graph.facebook.com/v25.0/{ig_user_id}",
         params={
             "fields": "id,username",
             "access_token": access_token,
@@ -349,7 +349,7 @@ def fetch_instagram_business_account(access_token: str, ig_user_id: str) -> dict
 
 def discover_accessible_instagram_accounts(access_token: str, limit: int = 5) -> list[str]:
     response = requests.get(
-        "https://graph.facebook.com/v19.0/me/accounts",
+        "https://graph.facebook.com/v25.0/me/accounts",
         params={
             "fields": "id,name,instagram_business_account{id,username}",
             "access_token": access_token,
