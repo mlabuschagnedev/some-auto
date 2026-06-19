@@ -32,7 +32,12 @@ It should not be treated as the complete current capability surface. Newer imple
 - Page-level live posting overrides.
 - Meta and LinkedIn global token handling.
 - Facebook native scheduled-post handoff and sync.
-- Facebook/Instagram analytics snapshots and top-post reporting.
+- Facebook/Instagram account snapshots for views, reach, visits, followers, engagement, reactions, and media count where available.
+- Remote Facebook post and Instagram media discovery from Meta, including matching pulled posts back to local history.
+- Remote-only Facebook/Instagram post backfill with captions, thumbnails, platform IDs, permalinks, and published dates.
+- Post-level metrics for Facebook views, reach, engagement, comments, shares, reactions, and clicks.
+- Post-level metrics for Instagram reach, views, likes, comments, shares, saved count, and total interactions.
+- Analytics workspace with KPIs, trend charts, platform/account comparison, post-performance cards, diagnostics, raw rows, manual refresh, and scheduled refresh status.
 - Excel marketing report export and Google Sheets sync.
 - Global and page reference sheets.
 - User management for developer, admin, and designer roles.

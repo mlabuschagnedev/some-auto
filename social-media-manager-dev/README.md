@@ -2,6 +2,8 @@
 
 `social-media-manager-dev` is the current working application for MSS SoME-Auto. It combines a Flask API, PostgreSQL-first SQLAlchemy data model, APScheduler automation, provider integrations, analytics/reporting jobs, and a React + TypeScript frontend.
 
+This folder is the app being actively built and used. The sibling `social-media-manager/` folder is only a packaged/static runtime mirror and should not be treated as the source of truth for current product capability.
+
 The product is planner-first: posts normally begin as planning rows, not isolated post records. The queue and history views monitor work that has already moved out of the planner.
 
 ## Current Architecture
@@ -38,9 +40,52 @@ The product is planner-first: posts normally begin as planning rows, not isolate
 - Global and page reference sheets for operational information.
 - User management for developer, admin, and designer roles.
 - Warning emails for planner deadlines, missing creative, incomplete row fields, and rows approaching publish time without ready status.
-- Analytics for Facebook and Instagram account/page metrics, post references, post insight snapshots, top posts, trend rows, and diagnostic insight rows.
-- Marketing report export to `.xlsx` from a workbook template.
-- Google Sheets report sync with report/campaign spreadsheet matching when credentials are configured.
+
+## Major Analytics and Reporting Work
+
+Analytics is a first-class part of the current dev app. It is not just a dashboard shell.
+
+The backend now:
+
+- Refreshes Facebook and Instagram account/page metrics through Meta Graph API calls.
+- Stores durable account metric history in `SocialInsight` and `AccountInsightSnapshot` records.
+- Tracks Facebook views, reach, visits, followers, engagement, and reactions when available.
+- Tracks Instagram views, reach, profile visits, followers, media count, accounts engaged, and total interactions when available.
+- Pulls recent Facebook Page posts from Meta using the page feed.
+- Pulls recent Instagram Business media from Meta using the media endpoint.
+- Matches pulled remote posts/media to existing local posts by stored provider ID where possible.
+- Falls back to caption/date matching so posts that were published outside the app can still be connected to the local history when there is enough evidence.
+- Creates local posted records for remote-only Facebook or Instagram content when Meta has posts/media that SoMe-Auto did not originally create.
+- Saves platform IDs, permalinks, published dates, media type, caption previews, and thumbnails through `PlatformPostReference` and linked `Post` records.
+- Stores post-level metric history in `PostInsightSnapshot`.
+- Captures Facebook post metrics for views, reach, engagement, comments, shares, reactions, and clicks.
+- Captures Instagram post/media metrics for reach, views, likes, comments, shares, saved count, and total interactions.
+- Preserves stale values when a metric temporarily becomes unavailable instead of wiping useful historical data.
+- Records unavailable/error insight rows so the diagnostics view can show permission, token, account setup, or API availability problems.
+- Runs a scheduled social-insight refresh job through APScheduler.
+- Supports manual analytics refreshes for all accounts or a single account, with queued/running/finished/failed progress state.
+- Allows refresh date ranges instead of forcing one fixed reporting window.
+
+The frontend Analytics workspace now includes:
+
+- Overview KPIs for selected accounts and date ranges.
+- Date, client/page, platform, metric, and search filters.
+- Trend charts for views, engagement, followers, reach, visits, and media count.
+- Facebook vs Instagram platform comparison.
+- Account comparison sorted by performance metrics.
+- Post-level performance cards with thumbnails, captions, page names, publish dates, platform badges, views, reach, interactions, comments, shares, readiness state, and direct post links.
+- Separate Posts, Accounts, Diagnostics, and Raw Data views.
+- Sorting for posts and account tables.
+- Manual refresh, saved database reload, and report export actions from the Analytics screen.
+
+Reporting now includes:
+
+- Excel marketing report export from a configured workbook template.
+- Google Sheets report sync when credentials and spreadsheet IDs are configured.
+- Matching report tabs back to local pages/clients, including alias handling.
+- Matching campaign spreadsheet rows to pulled/published post content.
+- Writing monthly Facebook/Instagram metrics into the report structure.
+- Writing post-content rows for image/design/post sections where the target sheet expects them.
 
 ## Quick Start
 

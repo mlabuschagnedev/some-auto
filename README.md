@@ -6,11 +6,12 @@ This repository intentionally excludes production databases, uploaded media, log
 
 ## Current Source of Truth
 
-- `social-media-manager-dev/` is the current application: modular Flask API, PostgreSQL-first storage, background jobs, and a React + TypeScript + Vite frontend.
+- This README describes the current `social-media-manager-dev/` application, not the older packaged mirror.
+- `social-media-manager-dev/` is the active working app: modular Flask API, PostgreSQL-first storage, APScheduler background jobs, provider integrations, analytics/reporting, and a React + TypeScript + Vite frontend.
 - `social-media-manager/` is a packaged/static runtime mirror kept for deployment history and comparison. It is not the authoritative current dev surface.
 - `autopost.py` and `backup_tool.py` are older adjacent utilities kept with the original project structure.
 
-## What It Can Do Today
+## Major Current Capabilities
 
 - Manage multiple pages, brands, clients, or branches as first-class workspaces.
 - Attach Facebook, Instagram, LinkedIn, X/Twitter, and Pinterest account records to each page.
@@ -29,10 +30,26 @@ This repository intentionally excludes production databases, uploaded media, log
 - Diagnose account readiness, environment readiness, token state, media URL reachability, and scheduler health.
 - Store page-level settings overrides so one page can publish live while another remains in simulation.
 - Maintain global and page reference sheets for operational information such as contact details, login notes, and page-specific reference data.
-- Refresh Facebook and Instagram analytics, store account and post insight snapshots, discover recent remote posts/media, and surface summaries, trends, account comparisons, and top posts.
-- Export marketing report workbooks from an Excel template and sync prepared report data into Google Sheets when report credentials are configured.
 - Send deadline, creative, and readiness warning emails to the right operational or designer recipients.
 - Prune orphaned uploads and repair additive runtime schema gaps on startup.
+
+## Analytics, Pulled Posts, and Metrics
+
+The analytics work is now a major part of the app, not a placeholder. The current dev app has a real Facebook and Instagram reporting pipeline:
+
+- Pulls and stores Facebook Page and Instagram Business account metrics into database snapshots instead of only showing one-off API responses.
+- Tracks account-level views, reach, visits/profile views, followers, engagement/content interactions, reactions, and Instagram media count where Meta exposes those values.
+- Pulls recent remote Facebook posts and Instagram media from Meta, not only posts created inside the app.
+- Matches pulled remote posts back to local post records by provider ID first, then caption/date matching when the provider ID was not already stored.
+- Backfills remote-only posts into local post history with captions, platform IDs, thumbnails, media type, published date, and permalink when the post exists on Meta but was not originally created through SoMe-Auto.
+- Stores post-level insight snapshots for Facebook views, reach, engagement, comments, shares, reactions, and clicks.
+- Stores post-level insight snapshots for Instagram reach, views, likes, comments, shares, saved count, and total interactions.
+- Keeps platform post references in `PlatformPostReference` and metric history in `AccountInsightSnapshot`, `SocialInsight`, and `PostInsightSnapshot` records.
+- Runs scheduled social-insight refreshes through APScheduler and also supports manual refreshes with queued/running/finished progress state.
+- Provides an Analytics workspace with overview KPIs, trend charts, platform comparison, account comparison, post-performance cards, account tables, diagnostics, raw rows, filters, sorting, and date ranges.
+- Exports a marketing report workbook from an Excel template and can sync the prepared report values and post-content rows into Google Sheets when report credentials are configured.
+
+Analytics is strongest for Facebook and Instagram because those are the platforms currently backed by Meta insight APIs. LinkedIn, X/Twitter, and Pinterest remain part of the publishing/integration workflow, but not the same full insight pipeline.
 
 ## Architecture
 

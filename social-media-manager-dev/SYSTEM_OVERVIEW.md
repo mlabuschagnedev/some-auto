@@ -265,21 +265,56 @@ The app reduces credential sprawl by centralizing token state where practical:
 
 ## 15. Analytics and Reporting
 
-Analytics covers Facebook and Instagram.
+Analytics covers Facebook and Instagram because those are the platforms currently backed by the Meta insight pipeline.
 
-The system can:
+The system can refresh and store account-level metrics:
 
-- refresh account insights
-- store account-level metrics such as views, reach, visits, followers, engagement, reactions, and media count where available
-- discover and store recent Facebook post and Instagram media references
-- refresh post-level metrics such as reach, views, reactions, comments, shares, saves, likes, clicks, and engagement where available
-- show account comparison, trends, top posts, raw rows, and diagnostics
-- run manual analytics refreshes with progress state
-- run scheduled refreshes with pacing
-- export an Excel marketing report from a workbook template
-- sync report values and post-content rows into Google Sheets when credentials and spreadsheet IDs are configured
+- Facebook views, reach, visits, followers, engagement, and reactions where the connected page can expose them
+- Instagram views, reach, profile visits, followers, media count, accounts engaged, and total interactions where the connected business account can expose them
+- normalized summary rows in `SocialInsight`
+- raw/fetched account snapshots in `AccountInsightSnapshot`
+- diagnostic rows for unavailable metrics, permission failures, token problems, and account setup issues
 
-The analytics layer is built around saved snapshots, not just live API reads, so historical reporting can survive API volatility and repeated view loads.
+The system also pulls post-level history from Meta, not only from posts originally created inside SoMe-Auto:
+
+- existing local posts are converted into platform references when they already have Facebook or Instagram provider IDs
+- recent Facebook Page posts are pulled from Meta using the page posts/feed endpoint
+- recent Instagram media is pulled from Meta using the media endpoint
+- pulled remote posts are matched to local posts by provider ID first, then by caption and publish-date proximity when needed
+- remote-only Facebook or Instagram posts are backfilled into local `Post` records with caption, status, platform ID, thumbnail, media type, permalink, scheduled/published date, and page relationship
+- `PlatformPostReference` links the local post record to the provider post/media ID
+
+Post-level insight snapshots are stored in `PostInsightSnapshot`:
+
+- Facebook post metrics include views, reach, engagement, comments, shares, reactions, and clicks where available
+- Instagram media metrics include reach, views, likes, comments, shares, saved count, and total interactions where available
+- temporarily unavailable metrics can preserve the last useful value as stale instead of erasing historical reporting data
+- the API exposes post rows for analytics cards and detailed per-post reference/metric inspection
+
+The Analytics frontend turns those stored records into:
+
+- overview KPIs
+- date, page/client, platform, metric, and search filters
+- trend charts
+- Facebook versus Instagram comparison
+- account comparison
+- post-performance cards with thumbnails and direct post links
+- account tables
+- diagnostics
+- raw insight rows
+- manual refresh, database reload, and report export actions
+
+Refresh can run manually or through the scheduler. Manual refreshes use queued/running/finished/failed progress state and can target all accounts or a single account over a selected date range. Scheduled refreshes run with pacing so multiple accounts do not all hit Meta at once.
+
+Reporting builds on the saved analytics data:
+
+- an Excel marketing report can be generated from a configured workbook template
+- Google Sheets report sync can update monthly Facebook/Instagram values when credentials and spreadsheet IDs are configured
+- report sheet names are matched back to local pages, including aliases for known client naming differences
+- campaign spreadsheet rows can be matched to pulled/published post content
+- post-content sections can be written back into the report where the target sheet expects image/design/post rows
+
+The analytics layer is built around saved snapshots, platform references, and backfilled post history instead of transient API reads, so historical reporting can survive API volatility and repeated view loads.
 
 ## 16. Warning Emails
 

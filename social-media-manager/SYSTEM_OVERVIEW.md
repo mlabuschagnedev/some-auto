@@ -19,7 +19,9 @@ The current MSS SoME-Auto development app is a planner-first social media operat
 - warning emails
 - diagnostics
 - reference sheets
-- Facebook/Instagram analytics
+- Facebook/Instagram account analytics
+- pulled remote Facebook posts and Instagram media
+- post-level metric snapshots
 - Excel and Google Sheets marketing reporting
 
 ## Why The Runtime Mirror Exists
@@ -56,8 +58,11 @@ The development app has moved beyond this mirror in important areas:
 - multi-file creative upload and crop handling
 - failed-post retry and queued-post reschedule endpoints
 - Meta remote scheduled-post sync
-- Facebook and Instagram analytics snapshots
-- top-post and trend reporting
+- Facebook and Instagram account analytics snapshots
+- pulled remote Facebook/Instagram post and media history
+- remote-only post backfill into local history
+- post-level metrics for views, reach, interactions, comments, shares, saves, likes, reactions, and clicks where available
+- top-post, trend, account-comparison, post-card, diagnostics, and raw-row reporting
 - Excel workbook export
 - Google Sheets report sync
 - scheduled analytics refresh with pacing and status tracking
