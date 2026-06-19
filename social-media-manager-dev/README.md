@@ -1,212 +1,278 @@
-# MSS SoME-Auto
+# MSS SoME-Auto Development App
 
-`MSS SoME-Auto` is a local web application for social media scheduling and publishing.
+`social-media-manager-dev` is the current working application for MSS SoME-Auto. It combines a Flask API, PostgreSQL-first SQLAlchemy data model, APScheduler automation, provider integrations, analytics/reporting jobs, and a React + TypeScript frontend.
 
-## Current architecture
+The product is planner-first: posts normally begin as planning rows, not isolated post records. The queue and history views monitor work that has already moved out of the planner.
 
-- Flask backend API
-- SQLAlchemy with PostgreSQL by default
-- JWT auth with access and refresh tokens
-- APScheduler for post execution and token maintenance
-- Browser frontend (HTML/CSS/JS) served by Flask
-- Scheduled + Posted tabs support both list and calendar views
-- Left-side page filter bar with select all / deselect all
-- Planning tab with one sheet per page and Excel-style row planning
-- Post edit/delete controls until published
-- Settings includes manager-focused FAQ section
+## Current Architecture
 
-## Quick start
+- Flask backend API with modular blueprints under `backend/routes/`.
+- Business logic split across service modules under `backend/services/`.
+- SQLAlchemy models for pages, social accounts, posts, settings, planner rows, reference sheets, platform post references, and insight snapshots.
+- PostgreSQL for normal operation. SQLite is allowed only for explicit isolated testing with `ALLOW_SQLITE_FOR_TESTS=1`.
+- JWT auth with access and refresh tokens.
+- JSON-backed user store in `instance/users.json` for bootstrap and internal users.
+- APScheduler for due posts, planner warnings, auto-scheduling, token refresh, orphaned upload pruning, and social-insight refresh.
+- React 19 + TypeScript + Vite frontend in `frontend/src/`.
+- Local upload storage with signed public-media URLs when providers need fetchable media.
+- Optional Cloudflare tunnel automation for local public media access.
+
+## Product Capabilities
+
+- Page and account management for Facebook, Instagram, LinkedIn, X/Twitter, and Pinterest.
+- Page search, pagination, image uploads, LinkedIn page URLs, and automatic planning-sheet creation.
+- Per-page social account records with platform-specific credential and external-ID fields.
+- Planner rows with job number, month, date, time, theme, copy, link, format, creative notes, deadline, MSS notes, designer, row color, warning state, and linked post state.
+- CSV planning import from `imports/planning/inbox/`, including page resolution, duplicate detection, row normalization, processed-file archiving, and import reports.
+- Creative upload management for planner rows, including multiple files, reorder support, replacement cleanup, and platform-aware validation.
+- Instagram-safe image ratio detection and browser-side crop support.
+- Planner-row scheduling, auto-scheduling, and immediate planner-row publishing.
+- Safe simulation mode by default, with global and page-level `live_posting_enabled` overrides for staged rollout.
+- Meta token normalization and propagation for Facebook and Instagram account records.
+- LinkedIn global configuration and manual-assist completion flow.
+- Facebook native scheduled-post handoff when a scheduled post is inside the Meta scheduling buffer.
+- X/Twitter media upload path using OAuth 1.0a credentials.
+- Pinterest image pin path using public media URLs and board selection.
+- Scheduled, posting, manual-pending, posted, failed, retried, rescheduled, and deleted post handling.
+- Integration and token diagnostics for account readiness, environment readiness, and media URL delivery.
+- Global and page reference sheets for operational information.
+- User management for developer, admin, and designer roles.
+- Warning emails for planner deadlines, missing creative, incomplete row fields, and rows approaching publish time without ready status.
+- Analytics for Facebook and Instagram account/page metrics, post references, post insight snapshots, top posts, trend rows, and diagnostic insight rows.
+- Marketing report export to `.xlsx` from a workbook template.
+- Google Sheets report sync with report/campaign spreadsheet matching when credentials are configured.
+
+## Quick Start
 
 1. Create and activate a virtual environment.
-2. Install dependencies.
-3. Create a PostgreSQL database and set `DATABASE_URL`.
-4. Start the app.
+2. Install Python dependencies.
+3. Configure PostgreSQL.
+4. Start the Flask app.
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r backend/requirements.txt
+.\.venv\Scripts\Activate.ps1
+pip install -r backend\requirements.txt
 $env:DATABASE_URL = "postgresql+psycopg://mss_some_auto:mss_some_auto@localhost:5432/mss_some_auto"
-python backend/app.py
+python start.py
 ```
 
-Open: `http://localhost:5000`
+Open:
 
-## Bootstrap login
+```text
+http://localhost:5000
+```
 
-The app bootstraps one protected developer account from `instance/users.json`.
+Run the React development server when working on the frontend:
 
-If the file does not exist yet, the bootstrap account defaults to:
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Build the frontend:
+
+```powershell
+cd frontend
+npm run build
+```
+
+## Bootstrap Login
+
+The app bootstraps a protected developer account from `instance/users.json`.
+
+If the file does not exist yet, the defaults are:
 
 - Username: `marcel`
 - Password: `admin123`
 
-You can override the bootstrap owner with:
+Override the bootstrap owner with:
 
 - `PRIMARY_DEVELOPER_USERNAME`
 - `PRIMARY_DEVELOPER_DISPLAY_NAME`
 - `PRIMARY_DEVELOPER_EMAIL`
 - `PRIMARY_DEVELOPER_PASSWORD`
 
-Additional users are created, edited, activated, deactivated, and deleted inside the web app under **Settings**.
+Additional users are created, edited, activated, deactivated, and deleted inside the web app under Settings.
 
-## Environment variables
+## Environment Variables
 
 Core:
 
 - `JWT_SECRET_KEY`
-- `DATABASE_URL` (default: `postgresql+psycopg://mss_some_auto:mss_some_auto@localhost:5432/mss_some_auto`; SQLite is blocked unless `ALLOW_SQLITE_FOR_TESTS=1`)
-- `DATABASE_POOL_SIZE` (default: `5`)
-- `DATABASE_MAX_OVERFLOW` (default: `10`)
-- `DATABASE_POOL_RECYCLE_SECONDS` (default: `1800`)
-- `UPLOAD_DIR` (default: `uploads/`)
-- `API_TIMEOUT_SECONDS` (default: `30`)
-- `APP_TIMEZONE` (default: `Africa/Johannesburg`)
-- `PUBLIC_BASE_URL` (required for Instagram/Pinterest media URLs)
-- `MEDIA_URL_SIGNING_SECRET` (optional; falls back to `JWT_SECRET_KEY`)
-- `AUTO_TRYCLOUDFLARE_TUNNEL` (default: `1`; auto-starts quick tunnel and refreshes `PUBLIC_BASE_URL` each app run when not using a custom domain)
-- `FLASK_DEBUG` (default: `1`; app runs with reloader disabled in `start.py` to avoid duplicate schedulers/tunnels)
-- `SOCIAL_INSIGHTS_REFRESH_INTERVAL_SECONDS` (default: `7200`; scheduled Meta insights refresh cadence)
-- `SOCIAL_INSIGHTS_MIN_REFRESH_SECONDS` (default: `6900`; skip guard to avoid repeat refreshes after restarts)
-- `SOCIAL_INSIGHTS_ACCOUNT_PACE_SECONDS` (default: `4`; delay between account refreshes in the scheduled insights job)
-- `SOCIAL_INSIGHTS_META_API_VERSION` (default: `v25.0`; Graph API version used for Facebook/Instagram insight reads)
-- `DISABLE_SCHEDULER` (default: `0`; set to `1` for one-off scripts that import the Flask app without running background jobs)
+- `DATABASE_URL`
+- `DATABASE_POOL_SIZE`
+- `DATABASE_MAX_OVERFLOW`
+- `DATABASE_POOL_RECYCLE_SECONDS`
+- `ALLOW_SQLITE_FOR_TESTS`
+- `UPLOAD_DIR`
+- `PLANNING_IMPORT_DIR`
+- `API_TIMEOUT_SECONDS`
+- `APP_TIMEZONE`
+- `PUBLIC_BASE_URL`
+- `MEDIA_URL_SIGNING_SECRET`
+- `AUTO_TRYCLOUDFLARE_TUNNEL`
+- `FLASK_DEBUG`
+- `DISABLE_SCHEDULER`
 - `PRIMARY_DEVELOPER_USERNAME`
 - `PRIMARY_DEVELOPER_DISPLAY_NAME`
 - `PRIMARY_DEVELOPER_EMAIL`
 - `PRIMARY_DEVELOPER_PASSWORD`
 
-Token refresh:
+Email and warnings:
 
+- `EMAIL_FROM`
+- `EMAIL_TO`
+- `SMTP_SERVER`
+- `SMTP_PORT`
+- `SMTP_USER`
+- `SMTP_PASS`
+- `SMTP_SECURITY`
+
+Provider setup:
+
+- `FACEBOOK_APP_ID`
+- `FACEBOOK_APP_SECRET`
 - `LINKEDIN_CLIENT_ID`
 - `LINKEDIN_CLIENT_SECRET`
+- `LINKEDIN_API_VERSION`
 - `PINTEREST_APP_ID`
 - `PINTEREST_APP_SECRET`
+- `SOCIAL_INSIGHTS_META_API_VERSION`
+- `SOCIAL_INSIGHTS_META_API_FALLBACK_VERSION`
+- `SOCIAL_INSIGHTS_REFRESH_INTERVAL_SECONDS`
+- `SOCIAL_INSIGHTS_MIN_REFRESH_SECONDS`
+- `SOCIAL_INSIGHTS_ACCOUNT_PACE_SECONDS`
 
-Notes:
+Marketing report export and sync:
 
-- For Instagram/Pinterest publish from local uploads, `PUBLIC_BASE_URL` must be publicly reachable (domain or tunnel URL).
-- For automatic Meta token normalization (short-lived -> long-lived and Facebook page-token derivation), fill in the Facebook App ID and App Secret once in Global Settings. Environment variables `FACEBOOK_APP_ID` and `FACEBOOK_APP_SECRET` still work as a fallback.
+- `MARKETING_REPORT_TEMPLATE_PATH`
+- `GOOGLE_REPORT_CREDENTIALS_PATH`
+- `GOOGLE_APPLICATION_CREDENTIALS`
+- `GOOGLE_REPORT_SPREADSHEET_ID`
+- `GOOGLE_CAMPAIGN_SPREADSHEET_ID`
 
-## Permanent Cloudflare tunnel (stable URL)
+## Live Posting Behavior
 
-Use this when you want a fixed public hostname instead of a temporary `trycloudflare.com` URL.
+`live_posting_enabled` controls whether real provider APIs are called.
+
+- `false`: safe simulation. The app can exercise planner, scheduler, queue, and history behavior without public posting.
+- `true`: live provider calls for supported accounts.
+
+The setting can be global or overridden per page, so one page can stay in simulation while another page publishes live.
+
+Platform behavior:
+
+- Facebook: text, image, video, and multi-image paths are implemented; eligible scheduled posts can be handed to Meta native scheduling and later synced.
+- Instagram: Graph API media creation uses temporary public media URLs and validates media rules before scheduling.
+- LinkedIn: account binding and global token state exist, but final publishing is modeled as manual assist in the product workflow.
+- X/Twitter: text plus media upload path is implemented when OAuth credentials are present.
+- Pinterest: single-image pin path is implemented when media URLs and board data are available.
+
+## Permanent Cloudflare Tunnel
+
+Use this when local uploads must be reachable at a stable public hostname.
 
 Prerequisites:
 
-- A Cloudflare account
-- A domain managed in Cloudflare DNS
-- `cloudflared` installed (`winget install Cloudflare.cloudflared`)
+- A Cloudflare account.
+- A domain managed in Cloudflare DNS.
+- `cloudflared` installed.
 
 Setup:
 
 ```powershell
-cd social-media-manager
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-cloudflare-tunnel.ps1 -Hostname "social.yourdomain.com"
 ```
 
-What the setup script does:
-
-- runs one-time `cloudflared tunnel login` if needed
-- creates (or reuses) named tunnel `social-media-manager`
-- creates DNS route for your hostname
-- writes tunnel config to `runtime/cloudflared/config.yml`
-- updates `PUBLIC_BASE_URL` in `start.py` to `https://social.yourdomain.com`
-
-Run tunnel:
+Run:
 
 ```powershell
-cd social-media-manager
 powershell -ExecutionPolicy Bypass -File .\scripts\run-cloudflare-tunnel.ps1
-```
-
-Then start the app:
-
-```powershell
-cd social-media-manager
 python start.py
 ```
 
-## Phase 2 live posting behavior
+## Important API Areas
 
-Live posting is controlled by app setting `live_posting_enabled`:
-
-- `false`: safe simulated publishing
-- `true`: real API calls
-
-Platform behavior:
-
-- Facebook: text, single image/video, multi-image post supported
-- Twitter/X: text + image/video upload supported
-- LinkedIn: text and uploaded image/video post supported
-- Instagram Graph API: single media post via temporary signed URL supported
-- Pinterest: single image pin via public URL supported
-
-## Account field notes
-
-When adding an account:
-
-- `platform` is required
-- `access_token` is required for most providers
-- `api_key`, `api_secret`, `access_token_secret` are required for Twitter
-- `page_id_external` is optional for some platforms but strongly recommended:
-  - Facebook: target page ID
-  - LinkedIn: author URN or person ID
-  - Instagram: business account ID (required)
-  - Pinterest: board ID (optional; first board is used if omitted)
-
-## Token refresh
-
-- Manual: `POST /api/accounts/:id/refresh`
-- Automatic: scheduler checks expiring tokens every 6 hours
-- Supported refresh providers: Facebook, LinkedIn, Pinterest
-
-## Integration checks
-
-Use the **Integrations** tab in the web app to verify:
-
-- environment variable readiness
-- account credential completeness
-- temporary media URL delivery status
-- provider warnings before enabling live posting
-
-## Multi-page scaling and scope
-
-- Settings and integrations can now be scoped to:
-  - global defaults (all pages)
-  - a single page override
-- `live_posting_enabled` supports page-level overrides, so one page can stay in simulation while another publishes live.
-- Tokens and integration readiness can be filtered by page.
-- Page listing API supports search and pagination for large installations.
-- Planning sheets are automatically created for each page.
-- Planning rows can upload creative media and schedule posts directly from row data.
-
-## Important API endpoints
+Auth and users:
 
 - `POST /api/auth/login`
 - `POST /api/auth/refresh`
+- `GET /api/auth/verify`
+- `POST /api/auth/logout`
+- `GET /api/users`
+- `POST /api/users`
+- `PUT /api/users/:username`
+- `DELETE /api/users/:username`
+
+Pages and accounts:
+
 - `GET /api/pages`
 - `GET /api/pages?page=1&per_page=25&q=search`
 - `POST /api/pages`
+- `GET /api/pages/:id`
+- `PUT /api/pages/:id`
+- `DELETE /api/pages/:id`
 - `POST /api/pages/:id/accounts`
+- `PUT /api/accounts/:id`
+- `DELETE /api/accounts/:id`
 - `POST /api/accounts/:id/test`
 - `POST /api/accounts/:id/refresh`
-- `GET /api/posts`
-- Planner-driven scheduling only:
-- `POST /api/planning/rows/:id/schedule`
-- `POST /api/planning/rows/:id/creative`
-- `GET /api/settings`
-- `PUT /api/settings`
-- `GET /api/pages/:id/settings`
-- `PUT /api/pages/:id/settings`
-- `GET /api/integrations/check`
-- `GET /api/pages/:id/integrations/check`
-- `GET /api/tokens/status?page_id=:id`
+
+Planner and posts:
+
 - `GET /api/planning/sheets`
-- `GET /api/pages/:id/planning`
+- `GET /api/pages/:id/planning?month=YYYY-MM`
 - `POST /api/pages/:id/planning/rows`
 - `PUT /api/planning/rows/:id`
 - `POST /api/planning/rows/bulk-update`
 - `DELETE /api/planning/rows/:id`
 - `POST /api/planning/rows/:id/creative`
 - `POST /api/planning/rows/:id/schedule`
+- `POST /api/planning/rows/:id/publish`
+- `POST /api/planning/import-csvs`
+- `GET /api/posts`
+- `POST /api/posts/:id/linkedin/manual`
+- `DELETE /api/posts/:id`
+- `POST /api/posts/:id/retry`
+- `POST /api/posts/:id/reschedule`
+
+Settings, diagnostics, and reference sheets:
+
+- `GET /api/settings`
+- `PUT /api/settings`
+- `GET /api/pages/:id/settings`
+- `PUT /api/pages/:id/settings`
+- `GET /api/reference-sheets/:sheet_key`
+- `PUT /api/reference-sheets/:sheet_key`
+- `GET /api/pages/:id/reference-sheets/:sheet_key`
+- `PUT /api/pages/:id/reference-sheets/:sheet_key`
+- `GET /api/health`
+- `GET /api/scheduler/status`
+- `GET /api/tokens/status`
+- `GET /api/integrations/check`
+- `GET /api/pages/:id/integrations/check`
+
+Analytics and reports:
+
+- `GET /api/analytics/accounts`
+- `GET /api/analytics/summary`
+- `GET /api/analytics/trends`
+- `GET /api/analytics/accounts/:id`
+- `GET /api/analytics/accounts/:id/trends`
+- `GET /api/analytics/accounts/:id/insights`
+- `GET /api/analytics/posts`
+- `GET /api/analytics/posts/:id`
+- `GET /api/analytics/raw`
+- `POST /api/analytics/refresh`
+- `GET /api/analytics/refresh/status`
+- `GET /api/analytics/export-report.xlsx`
+- `POST /api/analytics/export-report`
+
+## Operational Boundaries
+
+- The app is intentionally monolithic. Flask, scheduling, API work, file serving, and frontend serving run together.
+- Live provider behavior depends on valid tokens, page IDs, app permissions, public media reachability, and provider approval.
+- LinkedIn is deliberately modeled as manual assist for final posting rather than pretending full automation is available.
+- Report export/sync depends on local report templates and Google credentials that are not committed to the repo.

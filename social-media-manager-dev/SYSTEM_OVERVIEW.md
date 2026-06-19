@@ -2,614 +2,347 @@
 
 ## 1. What This System Is
 
-MSS SoME-Auto is a planner-first social media management platform built for a company or agency that needs to organize content production, track creative readiness, schedule posts, publish to connected social platforms, and preserve a useful record of past work.
+MSS SoME-Auto is a planner-first social media operations platform. It is meant to manage the full workflow around content planning, creative production, approvals, scheduling, publishing, diagnostics, analytics, and reporting.
 
-The system is not designed as a lightweight "type a caption and post it now" utility. Its real purpose is to become the operational control layer between:
+It is not just a "type a caption and post it" tool. Its stronger purpose is to become the internal control layer between:
 
 - business requests
-- content planning
-- design production
-- approvals
-- scheduling
-- publishing
-- reporting and historical reference
+- monthly content planning
+- designers and creative production
+- approvals and readiness states
+- scheduled publishing
+- live provider integrations
+- manual LinkedIn completion
+- analytics and management reporting
+- historical reference
 
-In practical terms, it gives a business one place where pages, platforms, planner rows, creatives, schedules, warnings, publishing state, user permissions, and post history all live together.
+In practical terms, it gives the business one workspace where pages, social accounts, planner rows, media files, scheduled posts, platform rules, warnings, permissions, insight snapshots, and report outputs stay connected.
 
-## 2. The End Goal of the Product
+## 2. Product Goal
 
-The end goal of this program is to let a company manage social media like an internal production system rather than an ad hoc collection of chats, emails, scattered folders, and last-minute manual posting.
+The goal is to turn social media execution into a managed production system instead of a loose mix of spreadsheets, chats, folders, and last-minute reminders.
 
-The intended final business outcome is:
+The business outcome is:
 
-- content is planned early
-- each page has a clear content pipeline
-- designers know what must be produced
-- managers know what is missing
-- publishing happens on time
-- platform constraints are enforced before failure
-- old posts remain searchable and useful for future ideas
-- access rights are controlled inside the app instead of through fragile shared credentials
+- content is planned early and grouped by page and month
+- designers can see what has to be produced
+- managers can see what is incomplete, ready, queued, posted, or failed
+- scheduling and publishing are controlled
+- platform-specific problems are caught before publish time
+- historical campaign work remains useful
+- analytics and reporting are tied back to actual page and post records
+- access is controlled through app roles instead of shared credentials
 
-This makes the app valuable not only as a posting tool, but as an internal operating framework for social media execution.
+## 3. Core Philosophy
 
-## 3. Core Product Philosophy
+### Planner-first operation
 
-The current system is built around a few strong design decisions.
+The planner is the source of truth. Normal posts begin as PlanningRows and move into Post records only when they are scheduled or published from the planner.
 
-### 3.1 Planner-first operation
+### Page-centric management
 
-The planner is the source of truth. Posts are meant to begin life as planning rows, not as isolated post records. The queue and history sections are for monitoring, reference, and backend cleanup, not for primary content creation.
+Everything starts from a Page. A page represents a client, brand, branch, or business presence. Accounts, planner sheets, settings, reference sheets, posts, history, and analytics all attach to page-level work.
 
-### 3.2 Page-centric management
+### Safe-by-default publishing
 
-Everything is anchored to a Page. A page represents a real client brand, department, branch, or business presence. Social accounts, planning sheets, posts, and integrations all attach to a page.
+The app defaults to simulated publishing. Live posting is controlled by `live_posting_enabled` globally or per page.
 
-### 3.3 Safe-by-default publishing
+### Hybrid automation
 
-The app distinguishes between simulated publishing and real publishing. That means a company can onboard credentials, verify flows, and test readiness before enabling live API posting.
+The app automates providers where the path is practical, and it models human work explicitly where platform approval or process limitations still require it. LinkedIn manual assist is the clearest example.
 
-### 3.4 Hybrid automation
+### Operational memory
 
-Where the app has stable API support, it automates publishing. Where platform approval or provider limitations block full automation, it falls back to structured manual-assist workflows instead of pretending automation exists.
+Planning is month-based and old rows remain available. The system becomes a memory bank for previous campaigns, recurring client requests, copy approaches, and design notes.
 
-### 3.5 Operational accountability
+## 4. High-Level Architecture
 
-The planner is not just for writing copy. It also carries deadlines, designers, creative readiness, job colors, notes, linked accounts, and warning logic. This turns content planning into trackable operational work.
+The development app is a monolithic web application with separated internal layers.
 
-### 3.6 Historical memory
+### Backend
 
-The planner is monthly based and past months stay available for review. That means the app doubles as a knowledge archive for previous campaigns, ideas, copy approaches, special requests, and design decisions.
+The backend is Flask. It exposes JSON API blueprints, handles auth, stores operational data through SQLAlchemy, runs background jobs, validates media, coordinates integrations, and serves frontend assets.
 
-## 4. High-Level Business Problem It Solves
+### Frontend
 
-Without a system like this, most businesses run social media through fragmented workflows:
+The current frontend is React + TypeScript + Vite. The workspace includes dashboard, projects/pages, planner, analytics, activity, notifications, settings, help, modal workflows, data tables, filters, charts, upload flows, and composer/crop tooling.
 
-- strategy sits in WhatsApp or email
-- designers get verbal instructions
-- captions live in random docs
-- media lives in folders with weak naming
-- scheduling depends on one person remembering to do it
-- platform-specific rules are caught too late
-- managers have poor visibility
-- old content gets lost
+### Database
 
-MSS SoME-Auto fixes that by turning social media delivery into a structured workflow with clear states, automation, alerts, and retained history.
+PostgreSQL is the normal database. SQLite is blocked by default and only available for explicit isolated tests with `ALLOW_SQLITE_FOR_TESTS=1`.
 
-## 5. High-Level Architecture
+### Background scheduler
 
-The product is a monolithic web application with a clear split between backend API, frontend UI, storage, and background automation.
+APScheduler runs inside the app process and handles:
 
-### 5.1 Backend
+- due-post processing every 30 seconds
+- planner warning emails
+- auto-scheduling planner rows near their target time
+- Facebook native scheduled-post handoff and state sync
+- token health checks and token refresh
+- orphaned upload pruning
+- scheduled Facebook/Instagram social-insight refresh
 
-The backend is a Flask application. It exposes JSON API endpoints, serves the frontend files, handles authentication, stores and retrieves operational data, runs scheduler jobs, manages platform publishing, and enforces business rules.
+### Storage
 
-### 5.2 Frontend
+Uploads are stored locally under `uploads/`. The app can serve them directly or create signed temporary public URLs for providers that need fetchable media.
 
-The frontend is a browser application built with plain HTML, CSS, and JavaScript. It is intentionally simple in stack choice, but feature-rich in behavior. The frontend holds a central state object and renders the app tabs, forms, planner grid, modal interfaces, queue views, and integration management surfaces.
+### Public media access
 
-### 5.3 Database
+Cloudflare tunnel scripts support local operation where Instagram, Pinterest, or report assets need public media access.
 
-The default database is PostgreSQL through SQLAlchemy. This keeps the production deployment on a server-grade relational store while preserving the ORM boundary already used by the backend.
+## 5. Technical Stack
 
-### 5.4 Background scheduler
+- Flask
+- Flask-JWT-Extended
+- Flask-SQLAlchemy
+- PostgreSQL through `psycopg`
+- APScheduler
+- requests and requests-oauthlib
+- Pillow
+- openpyxl
+- Google API client and Google Auth
+- React 19
+- TypeScript
+- Vite
 
-APScheduler runs inside the app process. It performs recurring background work such as:
+## 6. Core Data Model
 
-- checking for due posts
-- auto-scheduling planning rows
-- sending warning emails
-- refreshing expiring tokens
-- pruning old storage
+### Page
 
-### 5.5 File storage
+A Page is the top-level business unit. It stores name, description, image path, LinkedIn page URL, social accounts, planning sheet, posts, and page-level settings.
 
-Creative uploads are stored locally under the uploads directory. The app serves those files directly and can also generate temporary public links for platforms that need externally reachable media URLs.
+### SocialAccount
 
-### 5.6 Public access layer
+A SocialAccount stores a platform connection for a page: platform, account name, tokens, API keys, external IDs, expiry metadata, test status, and activity state.
 
-For local development and deployment without public hosting, the app can use a Cloudflare tunnel so remote platforms can fetch media from a public URL even while the app runs locally.
+### Post
 
-## 6. Technical Stack Summary
+A Post is the executable publishing record created from a planning row. It stores copy, media refs, target platforms, scheduled time, status, provider IDs, provider URLs, Facebook remote schedule state, errors, and LinkedIn manual completion state.
 
-- Flask backend API
-- SQLAlchemy ORM
-- PostgreSQL by default
-- JWT access and refresh tokens
-- APScheduler for recurring jobs
-- Pillow for image inspection and image-cropping support
-- requests for external API calls
-- plain JavaScript frontend
-- HTML/CSS frontend served by Flask
+### PlanningSheet and PlanningRow
 
-This stack was chosen for pragmatism: it is easier to operate, easier to understand, and faster to change than a heavily fragmented microservice system.
+Each page has one PlanningSheet. PlanningRows carry the real operational work: job number, month, date, time, theme, copy, links, format, final creative notes, deadlines, MSS notes, designer assignment, creative files, row color, warning keys, non-actionable state, and linked post ID.
 
-## 7. Core Data Model
+### Settings
 
-The system revolves around a small set of strong entities.
+AppSetting stores global defaults and credential state. PageSetting stores page-level overrides for default post time, timezone, auto-schedule, notifications, and live posting.
 
-### 7.1 Page
+### Reference Sheets
 
-A Page is the top-level content container for a brand or business presence. A page has:
+Global reference sheets store shared operational data such as contact info and login details. Page reference sheets store page-specific info sheets. The frontend includes an editable spreadsheet-like reference editor.
 
-- a name
-- a description
-- an optional image
-- an optional LinkedIn page URL
-- connected social accounts
-- one planning sheet
-- scheduled and posted content
+### Analytics Models
 
-This structure keeps content, integrations, and history grouped by business entity.
+Analytics data is stored in:
 
-### 7.2 SocialAccount
+- `SocialInsight`
+- `AccountInsightSnapshot`
+- `InstagramFollowerSnapshot`
+- `PlatformPostReference`
+- `PostInsightSnapshot`
 
-A SocialAccount represents a platform connection for a page. It stores:
+These models let the app store account metrics, follower snapshots, remote post references, and post-level insight snapshots instead of only showing transient API responses.
 
-- platform type
-- optional account name
-- provider credentials
-- external account identifiers
-- token expiry data
-- connection health state
+## 7. Authentication and Roles
 
-The account layer lets one page publish to multiple platforms while keeping platform-specific credentials separate.
+The browser uses JWT access and refresh tokens. The live auth source is a JSON user store in `instance/users.json`, with a protected primary developer account.
 
-### 7.3 Post
+Roles:
 
-A Post is the executable publishing record created from planning data. It stores:
+- `developer`
+- `admin`
+- `designer`
 
-- content
-- media
-- target platforms
-- scheduled time
-- publish status
-- platform-specific result IDs
-- platform URLs
-- error details
-- LinkedIn manual-assist completion state
+The role model controls operational access such as user management, admin planner actions, report sync, and settings-level work. The owner account is protected from deletion or takeover by normal user-management flows.
 
-Posts are what the scheduler actually processes.
+## 8. Planner Workflow
 
-### 7.4 PlanningSheet
+The Planning tab is the core of the product.
 
-Each page gets one PlanningSheet. This is the container for planner rows.
+A normal content item moves like this:
 
-### 7.5 PlanningRow
+1. A page exists.
+2. A planning row is created or imported into that page's monthly planner.
+3. Copy, theme, deadline, designer, notes, target date, and target time are filled in.
+4. Creative media is uploaded.
+5. The app validates media against active page platforms.
+6. An admin schedules the row or publishes it directly from the planner.
+7. A Post record is created and linked back to the row.
+8. The scheduler or immediate publishing flow executes the post.
+9. Results, URLs, failures, or manual LinkedIn state are stored.
+10. The row color and post history stay synced.
 
-PlanningRow is the operational heart of the product. A row contains:
+The planner also supports non-actionable rows so notes, headings, or disabled work can remain in the sheet without becoming publishable content.
 
-- linked accounts
-- job number
-- date
-- time
-- theme
-- post copy
-- link
-- format
-- final creative notes
-- deadline
-- internal notes
-- uploaded creative media
-- designer assignment
-- planner month
-- job color
-- warning state
-- optional scheduled post link
+## 9. CSV Import
 
-This means the planner is not just a calendar. It is effectively the production worksheet for each piece of content.
+CSV planning import reads files from `imports/planning/inbox/`. The importer:
 
-### 7.6 AppSetting and PageSetting
+- maps files to pages using explicit and normalized filename matching
+- rejects ambiguous page matches
+- normalizes row payloads
+- computes row signatures
+- skips duplicates already in the planner
+- creates PlanningRows for valid imported rows
+- moves processed files into `imports/planning/processed/`
+- returns a report of files seen, processed, failed, rows imported, skipped rows, months imported, and issues
 
-Global settings control system-wide defaults. Page settings allow overrides per page. This lets one company operate with shared defaults while still allowing specific pages to behave differently.
+This makes spreadsheet intake repeatable without blindly duplicating content.
 
-## 8. Authentication, Roles, and Control Model
+## 10. Creative and Media Handling
 
-The system uses JWT authentication with access and refresh tokens.
+Creative upload handling is platform-aware:
 
-### 8.1 User storage
+- uploads are stored as managed image or video refs
+- planner rows can hold multiple creative refs
+- replaced media is cleaned up when no longer referenced
+- Instagram image ratios are validated
+- the frontend can crop images into valid feed ratios
+- pages with both Facebook and Instagram active cannot schedule incompatible mixed-media bundles
 
-The current live auth source is a JSON user store in `instance/users.json`. The owner account is bootstrapped there and protected.
+The media layer also supports signed public URLs, remote URL validation, local upload serving, path normalization, and orphan cleanup.
 
-### 8.2 Roles
+## 11. Scheduling and Publishing
 
-The system currently uses three main roles:
+Scheduling is strict:
 
-- developer
-- admin
-- designer
+- planner rows must be actionable
+- date and time must parse
+- scheduled time must be in the future
+- copy is required
+- creative media is required
+- active platforms must exist
+- media must pass platform-aware validation
+- auto-scheduling can require the approved ready color
 
-### 8.3 Owner account
+Admin users can also publish directly from a planner row. This still creates a Post record and links it to the row, so the planner remains the origin of the action.
 
-The owner account is a protected top-level account intended for Marcel. It has developer-level reach and is protected from deletion by other users. Certain sensitive flows, especially the current LinkedIn manual-assist path, are restricted to the owner.
+Post statuses include:
 
-### 8.4 Why this matters operationally
+- `draft`
+- `scheduled`
+- `posting`
+- `manual_pending`
+- `posted`
+- `failed`
 
-This role split allows a company to give different staff access without giving everyone unrestricted platform control.
+Failed posts can be retried. Queued posts can be rescheduled. Scheduled or draft posts can be deleted, with linked planner rows and pending Facebook remote schedules cleaned up.
 
-Typical effect:
+## 12. Facebook Native Scheduling
 
-- developers manage system-level setup, configuration, and platform structure
-- admins manage planning and operational content work
-- designers work in the planner and creative pipeline
-- the owner retains top-level authority
+For eligible Facebook posts, the scheduler can hand the post to Meta native scheduling before local publish time. This is controlled by the configured Facebook buffer. Local state stores the remote post ID, remote state, remote scheduled time, last sync time, and last remote error.
 
-## 9. The Planner: The Real Center of the Product
+The scheduler later syncs remote state and treats published remote posts as successful platform results.
 
-The most important part of the application is the Planning tab.
+## 13. Platform Behavior
 
-### 9.1 Monthly design
+### Facebook and Instagram
 
-The planner is month-based. Users select a month and work inside that month. Past months remain available for reference, which turns the planner into a long-term institutional memory rather than a temporary workspace.
+Meta is the strongest automation path. The app can normalize user tokens, derive page access tokens, validate Instagram business account bindings, publish/simulate media posts, and refresh account/post insights.
 
-### 9.2 Why month-based planning matters
+### LinkedIn
 
-It supports:
+LinkedIn is deliberately represented as manual assist for final posting. The app stores LinkedIn page URLs, account binding state, global LinkedIn token metadata, and a manual completion endpoint. A post can remain `manual_pending` until a user records that the LinkedIn step is done.
 
-- campaign planning in advance
-- internal review across periods
-- reuse of successful concepts
-- visibility into special client requests from earlier work
-- easier seasonal and recurring-content planning
+### X/Twitter
 
-### 9.3 Planner fields as business process data
+The X path uses OAuth 1.0a credentials and supports text plus image/video upload when credentials and provider access are available.
 
-Each row combines creative, scheduling, and accountability data in one place. This is what makes the tool operationally stronger than a basic post scheduler.
+### Pinterest
 
-### 9.4 Row colors
+Pinterest support covers image pin publishing through public media URLs and board selection rules when tokens are configured.
 
-The job color system is used as a visual operational status marker. A row color is not decorative. It communicates readiness or blockage state.
+## 14. Token and Credential Strategy
 
-Most importantly, the green ready color is used as part of the gating logic for scheduling readiness.
+The app reduces credential sprawl by centralizing token state where practical:
 
-### 9.5 Month behavior
+- Meta app ID and secret can live in settings.
+- Meta user tokens can be normalized, exchanged, cached, and propagated to Facebook/Instagram account records.
+- Global LinkedIn access and refresh token metadata can be stored and propagated.
+- Scheduler jobs check token health and refresh expiring tokens.
+- Diagnostics report missing fields, token warnings, and live-readiness issues.
 
-Past months remain viewable. They are for reference and learning, not for creating new scheduled work in the past.
+## 15. Analytics and Reporting
 
-### 9.6 Planner-first scheduling rule
+Analytics covers Facebook and Instagram.
 
-Rows become scheduled posts from the planner. This is a deliberate control decision. It means the content pipeline is tied to structured planning data instead of bypassing the workflow.
+The system can:
 
-## 10. Creative Management and Media Rules
+- refresh account insights
+- store account-level metrics such as views, reach, visits, followers, engagement, reactions, and media count where available
+- discover and store recent Facebook post and Instagram media references
+- refresh post-level metrics such as reach, views, reactions, comments, shares, saves, likes, clicks, and engagement where available
+- show account comparison, trends, top posts, raw rows, and diagnostics
+- run manual analytics refreshes with progress state
+- run scheduled refreshes with pacing
+- export an Excel marketing report from a workbook template
+- sync report values and post-content rows into Google Sheets when credentials and spreadsheet IDs are configured
 
-The creative column is not a simple file field. It contains operational logic.
+The analytics layer is built around saved snapshots, not just live API reads, so historical reporting can survive API volatility and repeated view loads.
 
-### 10.1 Creative uploads
+## 16. Warning Emails
 
-Users can attach images and videos directly to planner rows. Those creatives then follow the row into scheduling and publishing.
+Planning warnings are used to prevent silent operational failure.
 
-### 10.2 Instagram and Facebook compatibility enforcement
+The current warning classes include:
 
-For pages connected to both Facebook and Instagram, the app enforces a stricter creative rule:
+- rows approaching scheduled time without ready status
+- rows approaching deadline with missing operational fields
+- rows approaching deadline with no creative attached
 
-- no multiple videos
-- no mixing images and videos in one row for that combined path
+Recipient routing distinguishes admin/operations warnings from designer-specific creative warnings.
 
-This is designed to prevent real-world platform mismatch failures.
+## 17. Diagnostics
 
-### 10.3 Instagram image ratio protection
+Diagnostics cover:
 
-The app checks uploaded images against acceptable Instagram image ratio limits. If an image is invalid for Instagram, the user gets an in-app cropper flow rather than discovering the problem only after scheduling.
+- health endpoint
+- scheduler status
+- token status
+- global and page-scoped integration checks
+- media URL readiness
+- account credential completeness
+- provider warnings
+- analytics refresh status
 
-### 10.4 In-app cropper
+This lets setup problems be found before live posting is enabled.
 
-The cropper is intentionally constrained to Instagram-safe ratio presets:
+## 18. Reference Sheets
 
-- 4:5
-- 1:1
-- 1.91:1
+Reference sheets are editable operational worksheets stored in settings. They give the app a place to hold structured internal data without creating a separate spreadsheet dependency for every small note.
 
-This is a practical quality control feature. It prevents unsuitable assets from moving deeper into the workflow.
+Current sheet types:
 
-## 11. Scheduling Model
+- global contact info
+- global login details
+- page info sheet one
+- page info sheet two
 
-Scheduling is intentionally strict.
+## 19. Safety and Recovery Design
 
-### 11.1 Scheduling source of truth
+Important safety protections include:
 
-Actual scheduling is driven by the row's date and time values.
+- SQLite blocked by default for normal operation
+- Flask reloader disabled by `start.py` to avoid duplicate schedulers
+- scheduler jobs use `max_instances=1`
+- due posts are claimed by status update before execution
+- planner rows cannot schedule into the past
+- invalid media is blocked before scheduling
+- local upload refs are normalized before serving or cleanup
+- stale upload pruning runs on a schedule
+- runtime schema repair adds missing columns for evolved deployments
+- Facebook remote schedules are canceled when a queued local post is deleted or rescheduled
+- analytics refreshes use a lock and status payload to avoid concurrent manual refresh collisions
 
-### 11.2 Deadline is not the schedule
+## 20. Honest Boundaries
 
-The deadline field exists for internal production warning logic, not for publish timing. This is important because it separates:
+- Live provider success depends on provider permissions, token validity, account IDs, app approval, and public media access.
+- LinkedIn final posting is currently manual assist, not full automatic posting.
+- Analytics is strongest for Facebook and Instagram. Other platforms are managed primarily as publishing/integration targets.
+- Report export and Google Sheets sync need local/private templates and credentials that are intentionally not committed.
+- The app is monolithic by design. That keeps it practical for local/internal operation, but it means the app process owns API work, scheduling, file serving, and frontend serving together.
 
-- internal "work must be ready by this point"
-- actual "the post goes live at this time"
+## 21. Summary
 
-### 11.3 Auto-scheduling window
-
-The auto-scheduler monitors rows and automatically schedules qualifying planner rows when they are inside the configured lead window before the real post time.
-
-The current lead window is 10 minutes.
-
-### 11.4 Conditions for scheduling
-
-A row must be sufficiently complete and valid before it can become a scheduled post. This protects the system against garbage-in scheduling.
-
-### 11.5 No past-date scheduling
-
-The app rejects scheduling rows into the past. This protects operational sanity and prevents accidental invalid queue data.
-
-## 12. Warning Email Logic
-
-Warning emails are part of the internal management value of the system.
-
-### 12.1 What warning emails are for
-
-They are there to prevent silent failure inside the production process.
-
-### 12.2 Current warning categories
-
-The app currently sends warnings for:
-
-- a job approaching scheduled time but not green-ready
-- a row approaching deadline while important planning fields are still incomplete
-- a row approaching deadline with no creative attached
-
-### 12.3 Audience routing
-
-The warning system distinguishes between:
-
-- admin or Clarise-style operational warnings
-- designer-targeted creative warnings
-
-That means the app does not just detect risk. It directs the warning toward the people responsible for acting on it.
-
-## 13. Scheduled Queue and Posted History
-
-The non-planner post views still matter, but they serve different purposes.
-
-### 13.1 Scheduled Queue
-
-The Scheduled Queue exists to monitor what has already been scheduled. It provides:
-
-- list view
-- calendar view
-- page filters
-- queue visibility
-- backend cleanup actions
-
-It is not the primary content authoring surface.
-
-### 13.2 Posted History
-
-The Posted tab is the record of what happened after scheduling. It provides:
-
-- posted results
-- failed results
-- post history
-- long-term cleanup ability
-- backend storage maintenance
-
-The company benefit is that old posts can be reviewed for performance context, inspiration, compliance memory, and content reuse.
-
-## 14. Direct Posting Was Intentionally Removed
-
-Earlier versions supported more direct post creation paths. The current system is deliberately more disciplined:
-
-- direct post creation is disabled
-- direct post editing is disabled
-- direct publish-now behavior is disabled
-
-This is important because it forces the business to operate through the planner, which is the intended production model.
-
-That design decision reduces chaos and preserves planning integrity.
-
-## 15. Platform Behavior by Network
-
-The system does not treat every platform identically. Each network has its own operational path.
-
-### 15.1 Meta: Facebook and Instagram
-
-Meta is currently the strongest automation path in the product.
-
-Key characteristics:
-
-- global Meta token management
-- Facebook App ID and App Secret stored in settings
-- Facebook and Instagram account usage through shared Meta infrastructure
-- real posting supported when live mode is enabled
-- Instagram media handling depends on reachable public media URLs
-- platform-specific restrictions are pre-checked in the planner where possible
-
-Business value:
-
-- fewer token-management mistakes
-- stronger operational stability
-- one control center for Meta-connected pages
-
-### 15.2 LinkedIn
-
-LinkedIn is currently handled in manual-assist mode because Community Management approval is pending on the LinkedIn side.
-
-The current design is intentionally streamlined:
-
-- LinkedIn remains selectable as a page platform
-- the page stores a LinkedIn page URL
-- the post still carries LinkedIn as part of its platform list
-- when a LinkedIn-included post becomes relevant, the owner receives a structured popup
-- the popup provides the post copy, creative previews, download actions, page link, and scheduled time
-- the owner manually schedules the post on LinkedIn and marks the LinkedIn step done
-
-This is a very important design choice. It allows the company to launch the operational system now instead of waiting for LinkedIn approval, while still keeping LinkedIn inside the same planning workflow.
-
-### 15.3 X / Twitter
-
-The codebase contains a live X integration path built around OAuth 1.0a credentials and media upload support. In practical deployment terms, it is available when valid credentials and access are present.
-
-### 15.4 Pinterest
-
-Pinterest support exists in the system for image-pin publishing through the platform integration path. It depends on correct tokens, reachable media URLs, and board selection rules.
-
-## 16. Token and Credential Strategy
-
-Credential sprawl is a major failure point in social media systems. This app reduces that.
-
-### 16.1 Global Meta token model
-
-Instead of forcing every Meta-connected account to be managed separately, the app centralizes the Meta token flow in settings. It then propagates that capability into Facebook and Instagram account behavior.
-
-### 16.2 Global settings vs page overrides
-
-The product distinguishes between:
-
-- global defaults
-- per-page overrides
-
-This lets a company standardize most behavior while still handling exceptions.
-
-### 16.3 Integration readiness checks
-
-The Integrations tab provides a readiness layer that answers practical questions such as:
-
-- are required credentials present
-- are accounts complete enough to publish
-- is media delivery properly configured
-- are any warnings active before live mode is enabled
-
-That is valuable because it moves diagnosis earlier in the workflow.
-
-## 17. Live Posting vs Simulation
-
-One of the strongest operational safety features is the global or page-level live posting switch.
-
-### 17.1 Simulation mode
-
-When live posting is disabled, the system can still run the workflow without actually hitting provider APIs. This is useful during onboarding, testing, training, and credential setup.
-
-### 17.2 Live mode
-
-When live posting is enabled, the system performs real API publishing where the provider path is operational.
-
-### 17.3 Why this matters to a business
-
-It allows a company to roll out the system responsibly rather than risking accidental public posting during setup.
-
-## 18. Operational Flow from Start to Finish
-
-The normal lifecycle of content in this system is:
-
-1. A page is created.
-2. Social accounts are attached to that page.
-3. Global and page settings are configured.
-4. The planner is used to create row-based content for the relevant month.
-5. Designers and managers fill in fields, upload creatives, and move rows toward readiness.
-6. Deadlines drive warning emails if work is incomplete.
-7. Once a row is ready, it is scheduled from the planner.
-8. The scheduler monitors due posts.
-9. Real platform publishing occurs where live automation is available.
-10. LinkedIn, for now, is completed through owner-driven manual assist.
-11. Results appear in queue or history.
-12. Old work remains available as an archive and reference source.
-
-This is a full operational pipeline, not just a post form.
-
-## 19. Why the Monthly Planner Makes the System Stronger
-
-The monthly view is especially important for real company use.
-
-It gives the business:
-
-- a natural planning rhythm
-- visibility across campaigns
-- a reusable archive
-- a stable content calendar structure
-- easy cross-month idea retrieval
-- better alignment between designers, managers, and scheduling staff
-
-Many companies lose value by treating each post as isolated. This system preserves continuity.
-
-## 20. Why This Improves a Company in Practice
-
-If a company uses this system properly, the improvement is not theoretical. It changes day-to-day operations in concrete ways.
-
-### 20.1 Better planning discipline
-
-Because the planner is mandatory, content gets structured earlier and more consistently.
-
-### 20.2 Fewer missed posts
-
-The scheduler and warning system reduce reliance on memory and last-minute manual handling.
-
-### 20.3 Better accountability
-
-Rows show who is responsible, what is missing, what month it belongs to, and whether it is ready.
-
-### 20.4 Fewer platform-related failures
-
-Creative rules, ratio checks, token checks, and integration checks catch problems earlier.
-
-### 20.5 Better leadership visibility
-
-Managers can see pages, queue volume, posted history, planner state, and readiness without chasing people manually.
-
-### 20.6 Better knowledge retention
-
-Past campaigns remain available. That means the company keeps its own content memory instead of losing ideas over time.
-
-### 20.7 Easier scaling
-
-As more pages, clients, or branches are added, the company can keep a consistent operating model instead of inventing a new process every time.
-
-### 20.8 Reduced bottlenecks
-
-The system is designed so that not everything depends on one person remembering everything. The process becomes shared, visible, and trackable.
-
-## 21. Design Strengths of the Current Build
-
-The strongest qualities of the current build are:
-
-- planner-first discipline
-- page-based structure
-- monthly archival thinking
-- live/simulated safety split
-- role-aware access
-- hybrid automation where full automation is not yet possible
-- concrete platform-specific validation
-- centralized operational visibility
-
-These qualities make it more valuable than a simple scheduler.
-
-## 22. Current Boundaries and Honest Limitations
-
-A strong system overview should also be honest about current boundaries.
-
-- LinkedIn is in manual-assist mode, not full API automation
-- full platform confidence on every network depends on credential readiness and live validation
-- the system expects PostgreSQL for normal operation; SQLite is now only an explicit isolated-test option
-- the product is intentionally monolithic, which is a strength for simplicity, but it also means the app process owns API work, scheduling, and UI serving together
-
-These are not necessarily weaknesses. In the current business context they are mostly pragmatic tradeoffs.
-
-## 23. What This Product Really Becomes for a Company
-
-If adopted properly, this application becomes:
-
-- a social media planning board
-- a design coordination layer
-- a scheduling engine
-- a publishing controller
-- an operational warning system
-- a permissions-managed internal tool
-- a memory bank of past campaigns
-
-That combination is what gives it real business value.
-
-## 24. Final Summary
-
-MSS SoME-Auto is designed to make social media execution structured, reliable, and scalable.
-
-Its biggest value is not that it can post to social platforms. Many tools can do that.
-
-Its biggest value is that it creates an internal operating system for social media work:
-
-- planning is centralized
-- responsibilities are visible
-- creatives are tied to real schedule rows
-- deadlines trigger warnings
-- publishing is controlled
-- platform rules are enforced
-- past work stays available
-- the company becomes less dependent on chaos, memory, and informal communication
-
-That is why this system can materially improve a company. It turns social media from a reactive task into a managed operational process.
+MSS SoME-Auto has grown into an internal operating system for social media work. Its value is not only that it can publish posts. Its value is that it connects planning, creative readiness, scheduling, provider constraints, warnings, live/simulated rollout, manual LinkedIn completion, analytics, reporting, and historical memory into one controlled workflow.
